@@ -1,0 +1,12 @@
+{
+  "name": "unity-scene-convert",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unity demo scene -> GameEngine .scene converter + transform-convention regression guards.",
+  "bin": {
+    "unity-scene-convert": "convert.js"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\""
+  }
+}
