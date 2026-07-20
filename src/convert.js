@@ -19,10 +19,11 @@
 // omitted) — see README.
 //
 // Usage:
-//   node convert.js --pkg <extracted-pkg-dir> --scene <scene path suffix|guid>
-//                   --project <target-project-dir> [--assetdb <file>]
-//                   [--unity-project <unity-project-dir>]
-//                   [--out <output.scene>] [--verbose]
+//   unity-scene-convert --pkg <extracted-pkg-dir> --scene <scene path suffix|guid>
+//                       --project <target-project-dir> [--assetdb <file>]
+//                       [--unity-project <unity-project-dir>]
+//                       [--out <output.scene>] [--verbose]
+// (or: node src/convert.js <same flags>)
 
 const fs = require('fs');
 const path = require('path');
@@ -1165,7 +1166,7 @@ const meshMatchName = (s) => sanitizeName((s || '').replace(/ \(\d+\)$/, ''));
 function emitScene(ctx, st, sceneName) {
     const out = [];
     out.push(`[scene name="${sanitizeName(sceneName)}" version=1]`);
-    out.push(`; Converted from Unity scene by Tools/ai/unity-scene-convert/convert.js`);
+    out.push(`; Converted from Unity scene by openengine-unity-scene-converter`);
     out.push('');
 
     const emitted = {
@@ -1840,15 +1841,15 @@ function parseUnityMat(text) {
 
 // Locate the TextureCompiler CLI (PNG/TGA -> UASTC KTX2 encoder, built by the
 // engine's BUILD_TOOLS). Search order: explicit --texc, GE_TEXC env var, then
-// the build trees relative to this script's repo checkout.
+// engine build trees under the current working directory (covers running the
+// converter from an engine repo checkout).
 function findTexc(explicit) {
     const candidates = [];
     if (explicit) candidates.push(explicit);
     if (process.env.GE_TEXC) candidates.push(process.env.GE_TEXC);
-    const repoRoot = path.join(__dirname, '..', '..', '..');
     for (const preset of ['vs2026-x64-local', 'vs2026-x64-local-unity', 'vs2022-x64-local']) {
         for (const config of ['DebugFast', 'Release', 'RelWithDebInfo', 'Debug']) {
-            candidates.push(path.join(repoRoot, 'build', preset, 'bin', config, 'Tools', 'TextureCompiler.exe'));
+            candidates.push(path.join(process.cwd(), 'build', preset, 'bin', config, 'Tools', 'TextureCompiler.exe'));
         }
     }
     for (const c of candidates) {
@@ -2362,20 +2363,20 @@ function remapPropWaterSubmesh(node, unityMatGuid) {
     return unityMatGuid;
 }
 
-// Copy a PROJECT/EXAMPLE-side surface shader next to the generated materials so
+// Copy a PROJECT-side surface shader next to the generated materials so
 // "surfaceShader": "<name>.glsl" resolves material-dir-local (ShaderComposer resolves the
 // material's own directory first). The shaders are authored content, not engine built-ins — they
-// land in the user's project where they can read and extend them. One source of truth in the
-// editor examples (Apps/Editor/Assets/Examples/Materials/Water).
+// land in the user's project where they can read and extend them. One source of truth: the
+// copies bundled with this package under shaders/.
 const kWaterShaderRel = 'water_stylized.glsl';
 const kFallsShaderRel = 'waterfall_fx.glsl';
+const kShaderSrcDir = path.join(__dirname, '..', 'shaders');
 function ensureSurfaceShaderCopied(ctx, rel) {
     if (!ctx.matOutDir) return;
     if (!ctx.copiedSurfaceShaders) ctx.copiedSurfaceShaders = new Set();
     if (ctx.copiedSurfaceShaders.has(rel)) return;
     ctx.copiedSurfaceShaders.add(rel);
-    const repoRoot = path.join(__dirname, '..', '..', '..');
-    const src = path.join(repoRoot, 'Apps', 'Editor', 'Assets', 'Examples', 'Materials', 'Water', rel);
+    const src = path.join(kShaderSrcDir, rel);
     const dest = path.join(ctx.matOutDir, rel);
     try {
         if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
@@ -2608,13 +2609,13 @@ function resolveMaterial(ctx, unityMatGuid) {
 }
 
 // ---------------------------------------------------------------- main -----
-function main() {
+function main(argv = process.argv) {
     // Banner: every run logs which transform convention this copy emits, so any
     // regen log proves WHICH converter ran. A stale copy without this line (or
-    // with a different version) is self-identifying — see the CLAUDE.md
+    // with a different version) is self-identifying — see the
     // stale-terrain-branch-copy trap that motivated these guards.
     console.error(`transform-convention: ${TRANSFORM_CONVENTION_VERSION}`);
-    const args = parseArgs(process.argv);
+    const args = parseArgs(argv);
     if (!args.pkg || !args.scene) {
         console.error('Usage: node convert.js --pkg <extracted-pkg-dir> --scene <scene path suffix|guid> --project <target-project-dir> [--assetdb <file>] [--unity-project <unity-project-dir>] [--out <output.scene>] [--local-shadows off|faithful] [--verbose]');
         process.exit(2);
@@ -2798,6 +2799,7 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+    main,
     classifyMaterial, buildTriplanarDoc, buildMaterialDoc, buildWaterDoc, buildFallsDoc, parseUnityMat,
     // Transform convention (exercised by tests/transform-convention.test.mjs).
     TRANSFORM_CONVENTION_VERSION,

@@ -10,9 +10,9 @@
 // loudly if that regresses.
 //
 // Run:
-//   node --test Tools/ai/unity-scene-convert/tests/       (from repo root)
-//   node Tools/ai/unity-scene-convert/tests/transform-convention.test.mjs
-//   npm test    (in Tools/ai/unity-scene-convert/)
+//   npm test                                        (from the package root)
+//   node --test tests/
+//   node tests/transform-convention.test.mjs
 //
 // Pure ESM test; imports the real CommonJS convert.js via createRequire so the
 // EXACT emitted math is exercised, not a re-implementation.
@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONVERT = path.join(__dirname, '..', 'convert.js');
+const CONVERT = path.join(__dirname, '..', 'src', 'convert.js');
 const require = createRequire(import.meta.url);
 const convert = require(CONVERT);
 
