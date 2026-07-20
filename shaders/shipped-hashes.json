@@ -1,0 +1,15 @@
+{
+  "_comment": "SHA-256 (over LF-normalized content) of every shipped version of each bundled surface shader, newest first. ensureSurfaceShaderCopied auto-refreshes a destination copy only when its hash appears here (i.e. it is a pristine previously-shipped version); unknown hashes mean user edits and are never overwritten. Append the new hash whenever a shader changes.",
+  "water_stylized.glsl": [
+    "b8cb1946faff0ea1ac883f08052f7482e3f64b78dde0648dcea261d07f4590db",
+    "3994da27e195ab31e415876f9cbb8679bfb1b1c80f7a12f1a21f4d1b7032bbf6",
+    "c508fed4060b2a4ad514fa59163aa7a1dc703aabb85afeefc67c462815f383ab",
+    "17ebc7e28f1d88bedc9e87ae1108a157a4a35f6176f7c70053411470d1106fbd",
+    "c81ef2d349203c96593c1d2706fd4676bc3012a6690a931c19d202b24d1d6bda",
+    "588e6ed823f872cc4164f41b9d4b0c31196eec2489a43b2eddbf781a97c9969a"
+  ],
+  "waterfall_fx.glsl": [
+    "691a28b2799b374cb219c478fd92e4d72803d28a8c94479c4efae9f4a3574997",
+    "7375c579d9e7c357060664504c204c642b1d6b96fac47f48e54ba2156ffb06d9"
+  ]
+}

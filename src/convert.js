@@ -25,6 +25,7 @@
 //                       [--out <output.scene>] [--verbose]
 // (or: node src/convert.js <same flags>)
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -2368,20 +2369,71 @@ function remapPropWaterSubmesh(node, unityMatGuid) {
 // material's own directory first). The shaders are authored content, not engine built-ins — they
 // land in the user's project where they can read and extend them. One source of truth: the
 // copies bundled with this package under shaders/.
+//
+// Refresh policy (hash-compare, not copy-if-missing): a destination copy that
+// matches a KNOWN shipped version (shaders/shipped-hashes.json — every version
+// ever shipped, hashed over LF-normalized content) is pristine and safe to
+// auto-overwrite with the current version; an unknown hash means the user
+// edited their copy, which is warned about and never clobbered.
 const kWaterShaderRel = 'water_stylized.glsl';
 const kFallsShaderRel = 'waterfall_fx.glsl';
 const kShaderSrcDir = path.join(__dirname, '..', 'shaders');
+const kShippedHashesFile = 'shipped-hashes.json';
+
+const hashShaderText = (text) =>
+    crypto.createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex');
+
+const shippedHashesCache = new Map(); // srcDir -> { rel: [sha256, ...] }
+function loadShippedHashes(srcDir) {
+    if (shippedHashesCache.has(srcDir)) return shippedHashesCache.get(srcDir);
+    let manifest = {};
+    try { manifest = JSON.parse(fs.readFileSync(path.join(srcDir, kShippedHashesFile), 'utf8')); }
+    catch { /* no manifest -> nothing auto-refreshes, user copies stay safe */ }
+    shippedHashesCache.set(srcDir, manifest);
+    return manifest;
+}
+
+// Pure decision: what to do with an existing destination copy.
+function classifySurfaceShaderDest(srcText, destText, shippedHashes) {
+    if (destText === null) return 'copy';
+    const destHash = hashShaderText(destText);
+    if (destHash === hashShaderText(srcText)) return 'up-to-date';
+    if (Array.isArray(shippedHashes) && shippedHashes.includes(destHash)) return 'refresh';
+    return 'user-modified';
+}
+
+// Returns the action taken: 'copied' | 'up-to-date' | 'refreshed' |
+// 'skipped-user-modified' | 'error' (undefined when memoized for this run).
 function ensureSurfaceShaderCopied(ctx, rel) {
     if (!ctx.matOutDir) return;
     if (!ctx.copiedSurfaceShaders) ctx.copiedSurfaceShaders = new Set();
     if (ctx.copiedSurfaceShaders.has(rel)) return;
     ctx.copiedSurfaceShaders.add(rel);
-    const src = path.join(kShaderSrcDir, rel);
+    const srcDir = ctx.shaderSrcDir || kShaderSrcDir;
+    const src = path.join(srcDir, rel);
     const dest = path.join(ctx.matOutDir, rel);
     try {
-        if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
+        const srcText = fs.readFileSync(src, 'utf8');
+        const destText = fs.existsSync(dest) ? fs.readFileSync(dest, 'utf8') : null;
+        const action = classifySurfaceShaderDest(srcText, destText, loadShippedHashes(srcDir)[rel]);
+        switch (action) {
+        case 'copy':
+            fs.copyFileSync(src, dest);
+            return 'copied';
+        case 'up-to-date':
+            return 'up-to-date';
+        case 'refresh':
+            fs.copyFileSync(src, dest);
+            console.error(`surface shader refreshed: ${dest} (pristine shipped version -> current)`);
+            return 'refreshed';
+        case 'user-modified':
+            warn(`surface shader NOT refreshed (${dest}): existing copy differs from every shipped version — `
+                + `treating as user-edited and keeping it. Delete the file to get the current version.`, ctx.verbose);
+            return 'skipped-user-modified';
+        }
     } catch (err) {
         warn(`surface shader not copied (${src}): ${err.message} — the referencing .material will not resolve its surface`, ctx.verbose);
+        return 'error';
     }
 }
 
@@ -2801,6 +2853,8 @@ if (require.main === module) main();
 module.exports = {
     main,
     classifyMaterial, buildTriplanarDoc, buildMaterialDoc, buildWaterDoc, buildFallsDoc, parseUnityMat,
+    // Surface-shader refresh (exercised by tests/surface-shader-refresh.test.mjs).
+    ensureSurfaceShaderCopied, classifySurfaceShaderDest, hashShaderText,
     // Transform convention (exercised by tests/transform-convention.test.mjs).
     TRANSFORM_CONVENTION_VERSION,
     conj, qMul, qRotate, kYFlip, emitObjectQuat, emitDirectionalQuat, composeWorldTRS,

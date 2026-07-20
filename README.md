@@ -238,7 +238,18 @@ one, it is copied next to the generated materials
 resolves material-dir-local. They land in your project as editable content —
 you own the copies and can extend them.
 
-Existing copies are not overwritten on re-conversion.
+Re-running a conversion refreshes those copies safely via hash comparison:
+
+- destination matches the bundled version → left alone (up to date);
+- destination matches a **known previously-shipped version** (manifest:
+  `shaders/shipped-hashes.json`) → auto-overwritten with the current version;
+- destination was **edited by you** (hash unknown) → warn-and-skip, your
+  edits are never clobbered (delete the file to re-copy).
+
+Hashes are SHA-256 over LF-normalized content, so CRLF checkouts don't
+misclassify a pristine copy as user-edited. The manifest is seeded with every
+version ever shipped from the engine repo, so projects converted before this
+package existed refresh correctly too.
 
 ## Limitations (all counted in stats)
 
@@ -295,7 +306,7 @@ MeshRenderer.receiveShadows = true
 ## Development
 
 ```
-npm test    # golden guard tests (transform convention)
+npm test    # golden guard tests (transform convention, shader refresh)
 ```
 
 Tests build synthetic Unity fixtures at runtime — the repository contains no
