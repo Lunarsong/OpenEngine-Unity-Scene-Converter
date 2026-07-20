@@ -109,9 +109,12 @@ for (const d of docs) {
     const pos = parseTuple(e.props['Transform.position']);
     const rot = parseTuple(e.props['Transform.rotation']);
     const scl = parseTuple(e.props['Transform.scale']);
+    // Rotations are emitted CONJUGATED (conj-v2: the engine renders
+    // R(conj(q_stored)), see src/convert.js) — undo the conjugation to compare
+    // against Unity's authored quaternion: unity.xyz == -scene.xyz, w equal.
     const pairs = [
         ['m_LocalPosition.x', pos[0]], ['m_LocalPosition.y', pos[1]], ['m_LocalPosition.z', pos[2]],
-        ['m_LocalRotation.x', rot[0]], ['m_LocalRotation.y', rot[1]], ['m_LocalRotation.z', rot[2]], ['m_LocalRotation.w', rot[3]],
+        ['m_LocalRotation.x', -rot[0]], ['m_LocalRotation.y', -rot[1]], ['m_LocalRotation.z', -rot[2]], ['m_LocalRotation.w', rot[3]],
         ['m_LocalScale.x', scl[0]], ['m_LocalScale.y', scl[1]], ['m_LocalScale.z', scl[2]],
     ];
     let any = false, bad = false;
