@@ -175,11 +175,9 @@ li { margin: 4px 0; }
 
 <p>
 This guide covers the three ways Unity content and engine extensions enter a project:
-the in-editor <strong>Import Unity Package</strong> modal (shipped in merge #77,
-<code>d10cf450b</code>), the standalone
+the in-editor <strong>Import Unity Package</strong> modal, the standalone
 <strong>OpenEngine-Unity-Scene-Converter</strong> CLI it wraps, and the engine's
-<strong>Package Manager</strong> for adding packages to a project. A flagged decision
-on whether the importer itself should become a package closes the guide.
+<strong>Package Manager</strong> for adding packages to a project.
 </p>
 
 <!-- ================================================================ -->
@@ -196,20 +194,17 @@ project-side water/waterfall surface shaders.
 <div class="panel ok">
     <div class="panel-title">Before you start</div>
     <ul>
-        <li><strong>Converter must be staged.</strong> The editor spawns a self-contained
-            converter executable at <code>&lt;Editor.exe dir&gt;/Tools/UnityImport/bin/converter.exe</code>,
-            built and staged by <code>cmake/StageUnityConverter.cmake</code>. That build step needs
-            Node.js ≥ 22 <em>on the machine that built the editor</em> — no Node at configure time
-            means the modal opens but reports <em>"Converter tool is not staged."</em></li>
+        <li><strong>The converter ships with the editor.</strong> If the modal reports
+            <em>"Converter tool is not staged,"</em> the editor was built on a machine without
+            Node.js ≥ 22 — install Node and rebuild the editor.</li>
         <li><strong>TextureCompiler is optional but recommended.</strong> When
             <code>TextureCompiler.exe</code> sits next to <code>Editor.exe</code>, copied textures
             are encoded to block-compressed, pre-mipped UASTC KTX2. Without it the import falls
             back to raw PNG copies. The modal tells you which mode it's in.</li>
-        <li><strong>Import the pack's FBX models first (slice 1).</strong> The converter resolves
-            mesh references by filename stem against the project's
-            <code>AssetDatabase.assetdb</code> — it does not copy FBX files out of the pack yet.
-            Meshes the project hasn't imported come out as unresolved entities (see the limits
-            panel below).</li>
+        <li><strong>Import the pack's FBX models first.</strong> The converter matches mesh
+            references by filename against models already imported into your project — it does
+            not copy FBX files out of the pack. Meshes the project hasn't imported are listed in
+            the completion report as unresolved; import them and re-run.</li>
     </ul>
 </div>
 
@@ -219,8 +214,7 @@ project-side water/waterfall surface shaders.
 
 <div class="step">
     <h4>Open the modal — <strong>Tools ▸ Import Unity Package…</strong></h4>
-    <p>The entry lives in the native menu bar's Tools menu. (For tooling / UI-replay, the
-       same command id <code>0x2100</code> opens it via <code>execute_command</code>.)</p>
+    <p>The entry lives in the native menu bar's Tools menu.</p>
 </div>
 
 </div>
@@ -239,11 +233,9 @@ project-side water/waterfall surface shaders.
        <code>*.unitypackage</code>. To import from an <em>extracted bundle folder</em> instead
        (the output of <code>tar -xzf pack.unitypackage</code>), paste or type the folder path
        into the field and press <span class="kbd">Enter</span> — committing the field loads the
-       bundle. That paste-a-path affordance exists precisely because the file dialog can't
-       select a directory.</p>
-    <p class="why">Either way, the modal runs the converter in inventory mode
-       (<code>--list-scenes</code>) on a background thread and fills in the scene list. Raw
-       <code>.unitypackage</code> files are extracted to a temp dir automatically; very large
+       bundle. The file dialog selects files only, so folder bundles are entered by path.</p>
+    <p class="why">Either way, the modal scans the bundle in the background and fills in the
+       scene list. Raw <code>.unitypackage</code> files are extracted automatically; very large
        packs (&gt; ~4&nbsp;GB extracted) should be pre-extracted and pointed at as a folder.</p>
 </div>
 
@@ -253,8 +245,8 @@ project-side water/waterfall surface shaders.
        path), <strong>all selected by default</strong>. The header counts your selection —
        <em>"Scenes in bundle (2 of 2 selected)"</em> — and the line underneath summarizes the
        shared asset pool: models, textures and materials are converted <strong>once</strong>
-       no matter how many scenes you tick, and each emitted <code>.scene</code> is byte-identical
-       to a standalone single-scene run.</p>
+       no matter how many scenes you tick, and each scene converts exactly as it would in a
+       single-scene run.</p>
 </div>
 
 </div>
@@ -279,14 +271,12 @@ project-side water/waterfall surface shaders.
 
 <div class="step">
     <h4>Import — and watch the progress</h4>
-    <p>Hit <strong>Import</strong>. The modal validates first (converter staged, bundle picked,
-       at least one scene selected — problems show as an inline warning, nothing runs). The
-       conversion streams JSON progress: bounded phases drive the bar with
-       <em>phase · detail — step / total</em>, and the unbounded texture-encode stream ticks a
-       <em>"textures: N encoded…"</em> line below it.</p>
-    <p class="why">Under the hood the conversion writes into a timestamped staging folder under
-       the project cache (<code>&lt;cache&gt;/UnityImport/import-&lt;ms&gt;</code>), outside the
-       asset FileWatcher's scope — the project never sees half-written files.</p>
+    <p>Hit <strong>Import</strong>. The modal validates first (converter available, bundle
+       picked, at least one scene selected — problems show as an inline warning, nothing runs).
+       A progress bar tracks each conversion phase — <em>phase · detail — step / total</em> —
+       with a live <em>"textures: N encoded…"</em> line below it.</p>
+    <p class="why">Conversion is staged safely before anything touches your Assets folder —
+       the project never sees half-written files.</p>
 </div>
 
 <div class="step">
@@ -294,19 +284,17 @@ project-side water/waterfall surface shaders.
     <p>Before anything moves, every output path is checked against the destination. If files
        would be replaced, a native dialog lists them (first 12 by name, then a count) and asks
        <strong>Overwrite / Cancel</strong> — <strong>Cancel is the default</strong>, and choosing
-       it returns you to the config screen with nothing written and the staging folder cleaned
-       up. Re-importing the same pack to the same destination will trigger this; it's the
-       expected refresh path.</p>
+       it returns you to the config screen with nothing written. Re-importing the same pack to
+       the same destination will trigger this; it's the expected refresh path.</p>
 </div>
 
 <div class="step">
-    <h4>Completion — read the honest summary, open a scene if you want</h4>
-    <p>One move pass relocates the staged outputs into the destination, the asset registry is
-       nudged, and the summary appears: scene / entity / material counts, texture stats
-       (encoded, copied, unresolved), a line for <strong>unresolved mesh references</strong> if
-       any, and a <em>"Didn't carry over:"</em> list of everything the converter recognized in
-       the source but dropped — silently discarding authored intent is treated as the worst
-       failure mode, so drops are always reported.</p>
+    <h4>Completion — read the summary, open a scene if you want</h4>
+    <p>The outputs move into the destination and the summary appears: scene / entity / material
+       counts, texture stats (encoded, copied, unresolved), a line for <strong>unresolved mesh
+       references</strong> if any, and a <em>"Didn't carry over:"</em> report listing anything
+       in the source that couldn't be carried over — you always know exactly what to revisit
+       by hand.</p>
     <p>Each imported scene gets an <strong>Open &lt;Scene&gt;</strong> button. <strong>Nothing
        auto-opens</strong> — opening a scene is always your click. <strong>Dismiss</strong>
        closes the modal and leaves your current scene untouched.</p>
@@ -325,50 +313,35 @@ project-side water/waterfall surface shaders.
 <div class="mermaid-wrap">
 <pre class="mermaid">
 flowchart LR
-    A["Bundle\n.unitypackage or\nextracted folder"] --> B["converter.exe --list-scenes\n(background thread)"]
+    A["Bundle\n.unitypackage or\nextracted folder"] --> B["Scan bundle"]
     B --> C["Scene multi-select\n+ shared-asset counts"]
-    C --> D["converter.exe --pkg --scene ×N\n--project &lt;stage&gt; --assetdb --json"]
-    D --> E["Staging dir\n&lt;projectCache&gt;/UnityImport/import-&lt;ms&gt;\n(outside FileWatcher)"]
-    E --> F{"Collisions at\ndestination?"}
-    F -- "yes" --> G["Native dialog\nOverwrite / Cancel\n(default Cancel)"]
-    F -- "no" --> H["One move pass\nstage → destination"]
-    G -- "Overwrite" --> H
-    G -- "Cancel" --> I["Stage cleaned,\nback to config"]
-    H --> J["Summary + Open Scene\n(no auto-open)"]
+    C --> D["Convert selected scenes\n(staged safely)"]
+    D --> E{"Files already at\ndestination?"}
+    E -- "yes" --> F["Native dialog\nOverwrite / Cancel\n(default Cancel)"]
+    E -- "no" --> G["Outputs move\ninto destination"]
+    F -- "Overwrite" --> G
+    F -- "Cancel" --> H["Nothing written,\nback to config"]
+    G --> I["Summary + Open Scene\n(no auto-open)"]
 </pre>
 </div>
 
 <ul>
-    <li>Esc closes the modal while it's idle; Cancel does the same. A run in progress can't be
-        interrupted from the modal yet (see limits).</li>
-    <li>Failures (converter crash, unreadable bundle, non-zero exit) land on a dedicated error
-        screen carrying the converter's stderr tail — copy it into a bug report as-is.</li>
-    <li>Everything the modal does, the CLI does too, with the same flags — the modal literally
-        drives <code>converter.exe --pkg … --scene … --json</code> (§2).</li>
+    <li>Esc closes the modal while it's idle; Cancel does the same.</li>
+    <li>Failures (unreadable bundle, conversion errors) land on a dedicated error screen
+        carrying the converter's diagnostic output — copy it into a bug report as-is.</li>
+    <li>Everything the modal does, the CLI does too, with the same behavior (§2) — the two
+        produce identical output.</li>
 </ul>
 
-<div class="panel warn">
-    <div class="panel-title">Slice-1 limits — known and honest</div>
-    <ul>
-        <li><strong>The scene list clips past ~7 rows.</strong> The list is a fixed-height
-            (180&nbsp;px) box with overflow hidden and no scrollbar yet. For packs with many
-            scenes, either import in passes or use the CLI's repeatable <code>--scene</code>
-            flag (§2).</li>
-        <li><strong>Pack model-seeding is deferred.</strong> The v2.0 design's Phase A — copying
-            the pack's FBX models into the project before conversion — did not ship in slice 1.
-            Mesh references resolve by filename stem (case-insensitive) against the project's
-            existing <code>AssetDatabase.assetdb</code>; anything not already imported surfaces
-            in the completion summary as an unresolved count and lands in the
-            <code>.scene</code> as an entity with a <code>; UNRESOLVED …</code> comment instead
-            of a MeshRenderer. Import the pack's FBX files first, then run the import (or re-run
-            it — re-import overwrites cleanly via the collision dialog).</li>
-        <li><strong>No mid-run cancel.</strong> Once a conversion starts, Esc/Cancel are inert
-            until it finishes or fails.</li>
-        <li><strong>Converter scope limits apply</strong> (all counted in the drop report):
-            skinned meshes, characters, cameras, particles, colliders, MonoBehaviours and
-            terrain are skipped; lights convert directional + point only; LODGroups emit LOD0.
-            See the converter README for the full list.</li>
-    </ul>
+<div class="panel">
+    <div class="panel-title">What converts</div>
+    <p>The converter focuses on static scene content: meshes, materials, textures,
+    directional and point lights, and LODGroups (LOD0). Unity features outside that scope —
+    skinned characters, cameras, particles, colliders, MonoBehaviours, terrain — are listed
+    in the completion report rather than converted, so you always know what to set up by
+    hand. See the
+    <a href="https://github.com/Lunarsong/OpenEngine-Unity-Scene-Converter">converter README</a>
+    for full coverage details.</p>
 </div>
 
 <!-- ================================================================ -->
@@ -377,10 +350,8 @@ flowchart LR
 <p>
 The converter is an open-source, standalone Node.js package —
 <a href="https://github.com/Lunarsong/OpenEngine-Unity-Scene-Converter">Lunarsong/OpenEngine-Unity-Scene-Converter</a>
-(MIT, zero runtime dependencies, Node ≥ 22). The public repo is the upstream and now carries
-the editor protocol (<code>--list-scenes</code>, <code>--json</code>) the modal depends on;
-the engine repo's <code>Tools/ai/unity-scene-convert/</code> is a mirror of it and is what the
-editor build bundles into <code>converter.exe</code>.
+(MIT, zero runtime dependencies, Node ≥ 22). It is the same converter the editor's import
+modal drives, so the modal and the CLI produce identical output.
 </p>
 
 <h3>Install</h3>
@@ -406,8 +377,8 @@ unity-scene-convert --pkg ./ElvenRealm.unitypackage \
 # machine-readable progress + summary (what the editor modal consumes)
 unity-scene-convert --pkg ./pack --scene demo.unity --project ./proj --json
 
-# legacy colour-grade path: bake SMH wheels to a .cube LUT instead of
-# the native ColorGradeEffect mapping (kept for one release of A/B)
+# bake SMH colour wheels to a .cube LUT instead of the native
+# ColorGradeEffect mapping
 unity-scene-convert --pkg ./pack --project ./proj --grade-lut</code></pre>
 
 <table>
@@ -416,7 +387,7 @@ unity-scene-convert --pkg ./pack --project ./proj --grade-lut</code></pre>
     <tr><td><code>--scene</code></td><td>Case-insensitive path suffix (<code>scenes/demo.unity</code>) or Unity guid. <strong>Repeatable</strong> — shared materials/textures emit once across all scenes in the run. Omitted + exactly one scene in the pack → auto-picked.</td></tr>
     <tr><td><code>--project</code></td><td>Target engine project. Mesh resolution reads <code>&lt;project&gt;/AssetDatabase.assetdb</code> (override: <code>--assetdb</code>); outputs default under <code>&lt;project&gt;/assets/</code>.</td></tr>
     <tr><td><code>--list-scenes</code></td><td>Inventory mode: one JSON object (scenes with name/path/guid, asset counts) and exit. No conversion.</td></tr>
-    <tr><td><code>--json</code></td><td>Editor protocol: JSON-lines progress (<code>{"phase","step","total","detail"}</code>) then a final summary object with per-scene counts, the honest-drop report, and every file written. Human diagnostics stay on stderr.</td></tr>
+    <tr><td><code>--json</code></td><td>Machine-readable mode: JSON-lines progress (<code>{"phase","step","total","detail"}</code>) then a final summary object with per-scene counts, the didn't-carry-over report, and every file written. Human diagnostics stay on stderr.</td></tr>
     <tr><td><code>--texc</code> / <code>--png</code></td><td>Texture encoding: point at <code>TextureCompiler.exe</code> for KTX2/BC7 (also found via <code>GE_TEXC</code>), or force raw PNG copies.</td></tr>
     <tr><td><code>--grade-lut</code></td><td>Bake ShadowsMidtonesHighlights to a Resolve-style <code>.cube</code> LUT + <code>CubeLutEffect</code> instead of the native <code>ColorGradeEffect</code> three-way mapping.</td></tr>
     <tr><td><code>--unity-project</code></td><td>Path to a real Unity project — pulls what a <code>.unitypackage</code> never ships: the active URP asset's volume profile, SSAO renderer feature, shadow/HDR/MSAA facts.</td></tr>
@@ -436,10 +407,10 @@ runs the engine's SceneIO structural rules plus a transform cross-check against 
         <li><strong>CI and batch regeneration</strong> — <code>--json</code> gives scriptable
             progress + a machine-readable summary; re-runs are deterministic and the skybox bake
             caches via a <code>.bake.json</code> sidecar.</li>
-        <li><strong>Many-scene packs</strong> — repeatable <code>--scene</code> sidesteps the
-            modal's clipped scene list (slice-1 limit).</li>
-        <li><strong>URP post-processing pulls</strong> — <code>--unity-project</code> has no
-            modal equivalent yet.</li>
+        <li><strong>Many-scene packs</strong> — the repeatable <code>--scene</code> flag makes
+            large selections scriptable.</li>
+        <li><strong>URP post-processing pulls</strong> — <code>--unity-project</code> is
+            CLI-only.</li>
         <li><strong>Colour-grade A/B</strong> — <code>--grade-lut</code> vs the native mapping.</li>
     </ul>
 </div>
@@ -449,7 +420,7 @@ runs the engine's SceneIO structural rules plus a transform cross-check against 
 
 <p>
 Separate from Unity imports, the engine has its own project package system. This section
-documents the flow as it exists today, with the <code>eztree</code> Tree Generator as the
+covers adding and managing packages, with the <code>eztree</code> Tree Generator as the
 worked example of an editor-extending package.
 </p>
 
@@ -495,14 +466,12 @@ the project's package manifest and what is actually mounted right now.
 </table>
 
 <div class="panel warn">
-    <div class="panel-title">The drift model — changes apply on project reopen</div>
-    <p>Every panel action edits the manifest/lock <strong>immediately</strong>, but asset mounts
-    and code modules only follow the manifest on the <strong>next project open</strong>. Live
-    remounting would eject loaded assets under your open scene and swap script ALCs mid-session,
-    so the panel instead shows per-row <span class="pill mod">REOPEN</span> badges and a status
-    line — <em>"changes saved; REOPEN the project to apply"</em> — for any row whose manifest
-    state has drifted from what's mounted. Save your scene, reopen the project, and the badges
-    clear.</p>
+    <div class="panel-title">Changes apply on project reopen</div>
+    <p>Every panel action saves <strong>immediately</strong>, but packages mount and unmount on
+    the <strong>next project open</strong>. Any row whose saved state differs from what's
+    currently loaded shows a <span class="pill mod">REOPEN</span> badge, and the panel's status
+    line reads <em>"changes saved; REOPEN the project to apply"</em>. Save your scene, reopen
+    the project, and the badges clear.</p>
 </div>
 
 <h3>What a package can carry — <code>eztree</code> as the worked example</h3>
@@ -531,38 +500,20 @@ editor itself. The engine-shipped Tree Generator is the canonical shape:
 <ul>
     <li><strong><code>assets</code></strong> — mounted as an asset source when the project opens.</li>
     <li><strong>Runtime modules</strong> — game-side code; ship with builds.</li>
-    <li><strong>Editor modules</strong> — editor-side extensions, loaded only in the editor. The
-        eztree editor DLL links the <strong>EditorSDK</strong> import library and
-        <em>self-registers via static initialization</em> on DLL load: a one-liner registrar
-        calls <code>RegisterEZTreeEditorPlugin()</code>, which lands its component traits, pick
-        provider, and stats panel in the <em>host's</em> editor registries.
-        <code>EditorPluginRegistry</code> replays the inspector pass for plugins that register
-        after editor startup, so late-loading packages integrate cleanly.</li>
+    <li><strong>Editor modules</strong> — editor-side extensions, loaded only in the editor.
+        The Tree Generator's editor module adds its components, viewport picking, and stats
+        panel the moment the package loads — no setup step.</li>
     <li><strong><code>prebuilt</code></strong> — pre-compiled binaries per module, so consuming a
         package doesn't require building its native code.</li>
-    <li><strong>C# modules</strong> feed the ScriptManager at mount and trigger a whole-graph
-        script reload (packages compile in topo order, then project scripts, one ALC swap) — no
+    <li><strong>C# modules</strong> compile and load automatically when the project opens — no
         script edit needed to activate them.</li>
 </ul>
-
-<div class="panel">
-    <div class="panel-title">Honest status: the import modal is built-in, not a package</div>
-    <p>Today the Unity importer ships <strong>compiled into Editor.exe</strong> — the modal, its
-    subprocess plumbing, and the staged <code>Tools/UnityImport/</code> converter are core editor
-    pieces, not a package. You will not find "Unity Importer" in the Package Manager, and you
-    can't disable it there. Whether that should change is exactly the open decision below.</p>
-</div>
 
 <!-- ================================================================ -->
 <hr>
 
 <div class="footer">
-    Unity Importer — User Guide · v1.0 · 2026-07-24 ·
-    Sources: <code>Apps/Editor/Source/Panels/UnityImportModal.cpp</code> (merge #77,
-    <code>d10cf450b</code>) · <code>cmake/StageUnityConverter.cmake</code> ·
-    <code>Tools/ai/unity-scene-convert/</code> ·
-    <code>Apps/Editor/Source/Packages/PackageManagerController.cpp</code> ·
-    <code>EnginePackages/eztree/</code> · converter-ui design v2.0 (2026-07-23)
+    Unity Importer — User Guide · v1.1 · 2026-07-24
 </div>
 
 </div>
