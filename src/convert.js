@@ -31,26 +31,61 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { parseUnityYaml } = require('./unityyaml');
 const skybox = require('./skybox');
+const unitypackage = require('./unitypackage');
 
 // ---------------------------------------------------------------- CLI ------
 function parseArgs(argv) {
-    const a = {};
+    const a = { scenes: [] };
     for (let i = 2; i < argv.length; i++) {
         const k = argv[i];
         if (k === '--verbose') { a.verbose = true; continue; }
         if (k === '--no-copy-textures') { a['no-copy-textures'] = true; continue; }
         if (k === '--png') { a.png = true; continue; }
         if (k === '--grade-lut') { a['grade-lut'] = true; continue; }
+        if (k === '--json') { a.json = true; continue; }
         if (!k.startsWith('--')) fail(`Unknown arg: ${k}`);
+        if (k === '--scene') { a.scenes.push(argv[++i]); continue; }
         a[k.slice(2)] = argv[++i];
     }
     return a;
 }
 function fail(msg) { console.error('ERROR: ' + msg); process.exit(1); }
+
+// ------------------------------------------------ machine-readable mode ----
+// --json turns stdout into a JSON-lines protocol for the editor UI: progress
+// objects {phase, step, total, detail} during the run, one final
+// {phase:"summary", ...} object with per-scene counts, the honest-drop report,
+// and the full output-file list. Human diagnostics stay on stderr in both
+// modes; the human stats block is stdout-only and suppressed under --json.
+let jsonMode = false;
+let jsonStep = 0;
+let jsonTotal = 0;
+function progressStep(phase, detail) {
+    if (jsonMode) console.log(JSON.stringify({ phase, step: ++jsonStep, total: jsonTotal, detail }));
+}
+let itemCounter = 0;
+function progressItem(phase, detail) {
+    if (jsonMode) console.log(JSON.stringify({ phase, step: ++itemCounter, total: null, detail }));
+}
+// Info lines that belong on stdout for humans but must not corrupt the --json
+// stream: route to stderr in json mode.
+function logInfo(msg) { (jsonMode ? console.error : console.log)(msg); }
+
+// Every file the conversion writes (or references as its product) is recorded
+// so the summary can hand the editor an exact output list — the overwrite-
+// collision check and the "Open Scene" menu are built from this.
+function recordOutput(ctx, absPath, kind) {
+    if (!ctx.outputSet) return; // unit-style ctx without output tracking
+    const key = path.resolve(absPath);
+    if (ctx.outputSet.has(key)) return;
+    ctx.outputSet.add(key);
+    ctx.outputs.push({ path: key, kind });
+}
 
 // ------------------------------------------------- package index -----------
 function buildPackageIndex(pkgDir) {
@@ -842,7 +877,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
                 ctx.volumeOverrides = parseVolumeProfile(
                     fs.readFileSync(path.join(entry.dir, 'asset'), 'utf8'));
                 if (ctx.verbose) {
-                    console.log(`volume profile: ${path.basename(entry.assetPath)} -> `
+                    logInfo(`volume profile: ${path.basename(entry.assetPath)} -> `
                         + Object.keys(ctx.volumeOverrides).join(', '));
                 }
             }
@@ -1412,6 +1447,8 @@ function resolveSceneSkybox(ctx) {
                     + `in ${((Date.now() - t0) / 1000).toFixed(1)}s (mean L ${stats.meanLuminance.toExponential(3)}, `
                     + `peak L ${stats.maxLuminance.toFixed(4)} scene-linear)`);
     }
+    recordOutput(ctx, outAbs, 'skybox');
+    recordOutput(ctx, metaAbs, 'skybox');
     return { relPath, guid: deterministicGuid(relPath), rotationDegrees: mat.rotationDegrees, reused, stats };
 }
 function emitAmbientLightLines(rs, verbose) {
@@ -1867,7 +1904,9 @@ function emitScene(ctx, st, sceneName) {
             // lutAsset paths against <project>/assets, so "assets/x.cube" would
             // double to <project>/assets/assets/x.cube and fail GUID resolution.
             const lutName = `${sceneName}_smh_lut.cube`;
-            bakeSmhCubeLut(smh, path.join(ctx.projectDir, 'assets', lutName));
+            const lutAbs = path.join(ctx.projectDir, 'assets', lutName);
+            bakeSmhCubeLut(smh, lutAbs);
+            recordOutput(ctx, lutAbs, 'lut');
             out.push(`CubeLutEffect.enabled = true`);
             out.push(`CubeLutEffect.stackOrder = 0`);
             out.push(`CubeLutEffect.intensity = 1`);
@@ -2287,6 +2326,8 @@ function resolveTexture(ctx, unityTexGuid, texKind) {
             if (ok) {
                 ref = { guid: deterministicGuid(rel), path: rel };
                 ctx.matStats.texEncoded++;
+                recordOutput(ctx, dest, 'texture');
+                progressItem('textures', rel);
                 texRefCache.set(cacheKey, ref);
                 return ref;
             }
@@ -2309,6 +2350,8 @@ function resolveTexture(ctx, unityTexGuid, texKind) {
                 if (!fs.existsSync(dest)) fs.copyFileSync(path.join(e.dir, 'asset'), dest);
                 ref = { guid: deterministicGuid(rel), path: rel };
                 ctx.matStats.texCopied++;
+                recordOutput(ctx, dest, 'texture');
+                progressItem('textures', rel);
             } catch (err) {
                 warn(`failed to copy texture ${e.assetPath}: ${err.message}`, ctx.verbose);
                 ctx.matStats.texUnresolved++;
@@ -2784,11 +2827,13 @@ function ensureSurfaceShaderCopied(ctx, rel) {
         switch (action) {
         case 'copy':
             fs.copyFileSync(src, dest);
+            recordOutput(ctx, dest, 'shader');
             return 'copied';
         case 'up-to-date':
             return 'up-to-date';
         case 'refresh':
             fs.copyFileSync(src, dest);
+            recordOutput(ctx, dest, 'shader');
             console.error(`surface shader refreshed: ${dest} (pristine shipped version -> current)`);
             return 'refreshed';
         case 'user-modified':
@@ -3006,7 +3051,9 @@ function resolveMaterial(ctx, unityMatGuid) {
                 if (needsFidelity) {
                     const base = sanitizeFileName(name) + '__' + unityMatGuid.slice(0, 8);
                     const rel = kMatOutRel + '/' + base + '.material';
-                    fs.writeFileSync(path.join(ctx.matOutDir, base + '.material'), JSON.stringify(doc, null, 2) + '\n');
+                    const matAbs = path.join(ctx.matOutDir, base + '.material');
+                    fs.writeFileSync(matAbs, JSON.stringify(doc, null, 2) + '\n');
+                    recordOutput(ctx, matAbs, 'material');
                     result = { path: rel, guid: deterministicGuid(rel) };
                     ctx.matStats.generated++;
                     fam.generated++;
@@ -3025,7 +3072,82 @@ function resolveMaterial(ctx, unityMatGuid) {
     return result;
 }
 
+// ------------------------------------------------------ inventory mode -----
+// --list-scenes <bundle>: parse the bundle (extracted dir or raw
+// .unitypackage), emit ONE JSON document on stdout — scene list + asset
+// counts by type — and exit without converting. This is what populates the
+// editor modal's scene multi-select, so it must stay fast: pathname entries
+// only, no YAML parse, no asset payload reads (raw packs are indexed from the
+// tar walk without extraction).
+const kAssetClasses = [
+    ['scene', new Set(['.unity'])],
+    ['prefab', new Set(['.prefab'])],
+    ['model', new Set(['.fbx', '.obj', '.gltf', '.glb', '.dae'])],
+    ['texture', new Set(['.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff', '.psd', '.exr', '.hdr', '.dds', '.bmp'])],
+    ['material', new Set(['.mat'])],
+    ['shader', new Set(['.shader', '.shadergraph', '.hlsl', '.cginc', '.compute'])],
+    ['audio', new Set(['.wav', '.mp3', '.ogg', '.aif', '.aiff'])],
+    ['animation', new Set(['.anim', '.controller', '.playable'])],
+];
+function classifyAssetPath(assetPath) {
+    const ext = path.extname(assetPath).toLowerCase();
+    if (!ext) return 'folder';
+    for (const [cls, exts] of kAssetClasses) if (exts.has(ext)) return cls;
+    return 'other';
+}
+function listScenesMain(bundle) {
+    let entries, bundleKind;
+    if (unitypackage.isUnityPackageFile(bundle)) {
+        bundleKind = 'unitypackage';
+        entries = unitypackage.indexUnityPackage(bundle);
+    } else if (fs.existsSync(bundle) && fs.statSync(bundle).isDirectory()) {
+        bundleKind = 'extracted-dir';
+        entries = buildPackageIndex(bundle);
+    } else {
+        fail(`--list-scenes: '${bundle}' is neither an extracted package dir nor a .unitypackage file`);
+    }
+    const scenes = [];
+    const assetCounts = {};
+    for (const [guid, e] of entries) {
+        const cls = classifyAssetPath(e.assetPath);
+        assetCounts[cls] = (assetCounts[cls] || 0) + 1;
+        if (cls === 'scene')
+            scenes.push({ name: path.basename(e.assetPath, path.extname(e.assetPath)), path: e.assetPath, guid });
+    }
+    scenes.sort((a, b) => a.path.localeCompare(b.path));
+    console.log(JSON.stringify({
+        bundle: path.resolve(bundle), bundleKind, scenes, assetCounts, totalAssets: entries.size,
+    }));
+}
+
 // ---------------------------------------------------------------- main -----
+// Locate a scene by guid or path suffix (case-insensitive, / or \ separators).
+function resolveSceneRef(ctx, ref) {
+    const wanted = ref.toLowerCase().replace(/\\/g, '/');
+    if (ctx.pkg.has(wanted)) return wanted;
+    for (const [g, e] of ctx.pkg) {
+        const p = e.assetPath.toLowerCase();
+        if (p.endsWith('.unity') && p.endsWith(wanted)) return g;
+    }
+    fail(`scene '${ref}' not found in package`);
+}
+
+// Multi-scene runs convert each scene exactly as a standalone invocation would
+// (byte-identical output): per-scene module state and the structure cache are
+// reset so ids and captured RenderSettings start fresh. What deliberately
+// SURVIVES across scenes is the shared-asset layer — materialCache/matStats,
+// texRefCache, matHide, the written Materials_Unity/Textures_Unity files — so
+// a subset of scenes always maps shared assets once and consistently.
+function resetPerSceneState(ctx) {
+    for (const k of Object.keys(stats)) stats[k] = 0;
+    warnings.length = 0;
+    droppedSettings.length = 0;
+    nodeCounter = 0;
+    ctx.structureCache.clear();
+    ctx.renderSettings = null;
+    ctx.volumeOverrides = null;
+}
+
 function main(argv = process.argv) {
     // Banner: every run logs which transform convention this copy emits, so any
     // regen log proves WHICH converter ran. A stale copy without this line (or
@@ -3033,17 +3155,37 @@ function main(argv = process.argv) {
     // stale-terrain-branch-copy trap that motivated these guards.
     console.error(`transform-convention: ${TRANSFORM_CONVENTION_VERSION}`);
     const args = parseArgs(argv);
-    if (!args.pkg || !args.scene) {
-        console.error('Usage: node convert.js --pkg <extracted-pkg-dir> --scene <scene path suffix|guid> --project <target-project-dir> [--assetdb <file>] [--unity-project <unity-project-dir>] [--out <output.scene>] [--local-shadows off|faithful] [--verbose]');
+    jsonMode = !!args.json;
+    jsonStep = 0; jsonTotal = 0; itemCounter = 0;
+    if (args['list-scenes']) { listScenesMain(args['list-scenes']); return; }
+    if (!args.pkg || args.scenes.length === 0) {
+        console.error('Usage: node convert.js --pkg <extracted-pkg-dir|.unitypackage> --scene <scene path suffix|guid> [--scene <...>] --project <target-project-dir> [--assetdb <file>] [--unity-project <unity-project-dir>] [--out <output.scene>] [--local-shadows off|faithful] [--json] [--verbose]\n'
+            + '       node convert.js --list-scenes <extracted-pkg-dir|.unitypackage>');
         process.exit(2);
     }
+    const sceneRefs = [...new Set(args.scenes)];
+    if (args.out && sceneRefs.length > 1)
+        fail('--out is single-scene only; multi-scene runs name outputs <project>/assets/<Scene>_unity.scene');
     const localShadows = args['local-shadows'] || 'faithful';
     if (localShadows !== 'off' && localShadows !== 'faithful')
         fail(`--local-shadows must be off|faithful (got '${localShadows}')`);
 
+    // A raw .unitypackage is accepted wherever an extracted dir is: extract to
+    // a temp dir first (the editor's stage-in-tmp flow usually pre-extracts).
+    let pkgDir = args.pkg;
+    const isRawPkg = unitypackage.isUnityPackageFile(pkgDir);
+    jsonTotal = (isRawPkg ? 1 : 0) + 1 + (args['unity-project'] ? 1 : 0) + sceneRefs.length * 3;
+    if (isRawPkg) {
+        const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'unitypkg-'));
+        console.error(`Package: extracting ${pkgDir} -> ${dest}`);
+        unitypackage.extractUnityPackage(pkgDir, dest);
+        progressStep('extract', pkgDir);
+        pkgDir = dest;
+    }
+
     const ctx = {
-        pkg: buildPackageIndex(args.pkg),
-        pkgDir: args.pkg,
+        pkg: buildPackageIndex(pkgDir),
+        pkgDir,
         projectDir: args.project || null,
         assetDb: null,
         structureCache: new Map(),
@@ -3060,16 +3202,21 @@ function main(argv = process.argv) {
         localShadows,
         gradeLutFallback: !!args['grade-lut'],  // opt-in legacy SMH .cube bake (A/B vs native bands)
         verbose: !!args.verbose,
+        outputs: [],           // [{path, kind}] — every file this run produced
+        outputSet: new Set(),
     };
     console.error(`Package: ${ctx.pkg.size} assets indexed`);
+    progressStep('index', `${ctx.pkg.size} assets indexed`);
 
     // Project-level pipeline state (--unity-project <unity-project-dir>): a
     // .unitypackage never ships URP pipeline assets or quality settings; a
     // real Unity project dir supplies the active RP asset (SSAO feature,
     // shadow/HDR/MSAA facts) and the quality-level volume profile that layers
     // UNDER the scene's global volume in URP's stack.
-    if (args['unity-project'])
+    if (args['unity-project']) {
         ctx.projectPipeline = loadUnityProjectPipeline(args['unity-project'], ctx.verbose);
+        progressStep('pipeline', args['unity-project']);
+    }
 
     // Generated .material assets and copied-in textures land under the project's
     // asset root (<project>/assets/{Materials_Unity,Textures_Unity}); the scene
@@ -3091,20 +3238,6 @@ function main(argv = process.argv) {
         }
     }
 
-    // Locate the scene by guid or path suffix.
-    let sceneGuid = null;
-    const wanted = args.scene.toLowerCase().replace(/\\/g, '/');
-    if (ctx.pkg.has(wanted)) sceneGuid = wanted;
-    else {
-        for (const [g, e] of ctx.pkg) {
-            const p = e.assetPath.toLowerCase();
-            if (p.endsWith('.unity') && p.endsWith(wanted)) { sceneGuid = g; break; }
-        }
-    }
-    if (!sceneGuid) fail(`scene '${args.scene}' not found in package`);
-    const scenePath = ctx.pkg.get(sceneGuid).assetPath;
-    console.error(`Scene: ${scenePath} (${sceneGuid})`);
-
     // Asset database (real project or explicit file).
     const dbFile = args.assetdb
         || (args.project && fs.existsSync(path.join(args.project, 'AssetDatabase.assetdb'))
@@ -3118,9 +3251,38 @@ function main(argv = process.argv) {
         console.error('AssetDb: NONE — all mesh refs will be unresolved');
     }
 
+    // Fail fast: resolve every requested scene before converting any.
+    const sceneGuids = [...new Set(sceneRefs.map((s) => resolveSceneRef(ctx, s)))];
+
+    const sceneRecords = [];
+    for (const guid of sceneGuids)
+        sceneRecords.push(convertOneScene(ctx, args, guid, sceneGuids.length > 1));
+
+    if (jsonMode) {
+        const m = ctx.matStats;
+        console.log(JSON.stringify({
+            phase: 'summary',
+            ok: true,
+            scenes: sceneRecords,
+            materials: {
+                generated: m.generated, skippedPlain: m.skippedPlain, unresolvedMat: m.unresolvedMat,
+                texResolved: m.texResolved, texEncoded: m.texEncoded, texCopied: m.texCopied,
+                texUnresolved: m.texUnresolved, unmappable: m.fallbackUnmappable,
+            },
+            outputs: ctx.outputs,
+        }));
+    }
+}
+
+function convertOneScene(ctx, args, sceneGuid, multiScene) {
+    resetPerSceneState(ctx);
+    const scenePath = ctx.pkg.get(sceneGuid).assetPath;
+    console.error(`Scene: ${scenePath} (${sceneGuid})`);
+
     const t0 = Date.now();
+    progressStep('expand', scenePath);
     const st = buildFileStructure(ctx, sceneGuid, []);
-    if (!st) fail('failed to parse scene');
+    if (!st) fail(`failed to parse scene ${scenePath}`);
     console.error(`Expanded ${st.nodes.size} nodes in ${Date.now() - t0} ms`);
 
     // Merge the RP asset's quality-level volume profile UNDER the scene's
@@ -3131,6 +3293,7 @@ function main(argv = process.argv) {
             ctx.projectPipeline.rpVolumeOverrides, ctx.volumeOverrides || {});
 
     const sceneName = path.basename(scenePath, '.unity');
+    progressStep('emit', sceneName);
     const { text, emitted } = emitScene(ctx, st, sceneName);
 
     const outFile = args.out
@@ -3138,6 +3301,8 @@ function main(argv = process.argv) {
                          : sceneName + '_unity.scene');
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     fs.writeFileSync(outFile, text);
+    recordOutput(ctx, outFile, 'scene');
+    progressStep('write', outFile);
 
     // A freshly converted scene supersedes any prior edit session's autosave
     // backup. The editor's crash-recovery prompt (SceneBackupRecovery) fires when
@@ -3151,9 +3316,44 @@ function main(argv = process.argv) {
         try { fs.rmSync(backupFile, { force: true }); } catch (_) { /* best-effort */ }
     }
 
-    // ------------------------------------------------------------ stats ----
+    if (!jsonMode) printHumanReport(ctx, st, emitted, outFile, multiScene ? sceneName : null);
+    if (!ctx.verbose && warnings.length)
+        console.error(`(${warnings.length} warnings; rerun with --verbose)`);
+
+    // Per-scene record for the --json summary: converted counts plus the
+    // honest-drop entries (deduplicated, same as the human report).
+    const droppedByKind = new Map();
+    for (const d of droppedSettings) {
+        if (!droppedByKind.has(d.kind)) droppedByKind.set(d.kind, new Set());
+        droppedByKind.get(d.kind).add(d.detail);
+    }
+    const dropped = [];
+    for (const [kind, details] of droppedByKind)
+        for (const detail of [...details].sort()) dropped.push({ kind, detail });
+    return {
+        scene: sceneName,
+        path: scenePath,
+        guid: sceneGuid,
+        output: path.resolve(outFile),
+        entities: emitted.entities,
+        meshEntities: emitted.meshEntities,
+        groupEntities: emitted.groupEntities,
+        materialsBound: emitted.materialsBound,
+        resolvedMeshes: emitted.resolvedMeshes,
+        unresolvedMeshes: emitted.unresolvedMeshes,
+        lights: emitted.lights,
+        warnings: warnings.length,
+        dropped,
+    };
+}
+
+// The human stats block — stdout, suppressed under --json. In multi-scene runs
+// the material/texture numbers are cumulative across the scenes converted so
+// far (shared-asset emission is deduplicated), which the scene-tagged header
+// makes explicit.
+function printHumanReport(ctx, st, emitted, outFile, sceneNameTag) {
     const s = stats;
-    console.log('--- conversion stats ---');
+    console.log(sceneNameTag ? `--- conversion stats: ${sceneNameTag} ---` : '--- conversion stats ---');
     console.log(`output:                    ${outFile}`);
     console.log(`nodes expanded:            ${st.nodes.size}`);
     console.log(`prefab instances expanded: ${s.prefabInstancesExpanded}`);
@@ -3231,9 +3431,6 @@ function main(argv = process.argv) {
     } else {
         console.log('recognized settings dropped: none');
     }
-
-    if (!ctx.verbose && warnings.length)
-        console.error(`(${warnings.length} warnings; rerun with --verbose)`);
 }
 
 // CLI entry. Gated so unit-style checks can require() the material-mapping

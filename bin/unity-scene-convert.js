@@ -13,9 +13,17 @@
 const fs = require('fs');
 const path = require('path');
 const { main } = require('../src/convert.js');
+const unitypackage = require('../src/unitypackage.js');
 
 function listScenes(pkgDir) {
     const scenes = [];
+    if (unitypackage.isUnityPackageFile(pkgDir)) {
+        try {
+            for (const e of unitypackage.indexUnityPackage(pkgDir).values())
+                if (e.assetPath.toLowerCase().endsWith('.unity')) scenes.push(e.assetPath);
+        } catch { /* unreadable pack falls through to convert.js's error */ }
+        return scenes;
+    }
     let entries;
     try { entries = fs.readdirSync(pkgDir); } catch { return scenes; }
     for (const entry of entries) {
@@ -30,7 +38,7 @@ function listScenes(pkgDir) {
 
 const kValueFlags = new Set([
     '--pkg', '--scene', '--project', '--assetdb', '--unity-project', '--out',
-    '--local-shadows', '--texc',
+    '--local-shadows', '--texc', '--list-scenes',
 ]);
 
 const argv = process.argv.slice(2);
@@ -55,7 +63,7 @@ if (positionals.length > 2) {
 if (positionals[0] && !seen.has('--pkg')) flags.push('--pkg', positionals[0]);
 if (positionals[1] && !seen.has('--project')) flags.push('--project', positionals[1]);
 
-if (!seen.has('--scene')) {
+if (!seen.has('--scene') && !seen.has('--list-scenes')) {
     const pkgIdx = flags.indexOf('--pkg');
     const pkgDir = pkgIdx >= 0 ? flags[pkgIdx + 1] : null;
     const scenes = pkgDir ? listScenes(pkgDir) : [];

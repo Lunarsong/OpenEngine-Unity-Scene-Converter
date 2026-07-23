@@ -30,22 +30,37 @@ Requires Node.js >= 22.
 
 ```
 unity-scene-convert [<pkg-dir> [<project-dir>]] \
-                    [--pkg <extracted-pkg-dir>] \
-                    [--scene <scene path suffix | unity guid>] \
+                    [--pkg <extracted-pkg-dir | pack.unitypackage>] \
+                    [--scene <scene path suffix | unity guid>] [--scene <...>] \
                     [--project <target-project-dir>] \
                     [--assetdb <file>] [--unity-project <unity-project-dir>] \
                     [--out <output.scene>] [--local-shadows off|faithful] \
                     [--no-copy-textures] [--png] [--texc <TextureCompiler.exe>] \
-                    [--grade-lut] [--verbose]
+                    [--grade-lut] [--json] [--verbose]
+unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 ```
 
 - The first positional argument maps to `--pkg`, the second to `--project`
   (explicit flags win). When `--scene` is omitted and the package contains
   exactly one `.unity` scene, it is auto-picked.
 - `--pkg` — directory produced by `tar -xzf pack.unitypackage` (entries are
-  `<guid>/pathname` + `<guid>/asset`).
+  `<guid>/pathname` + `<guid>/asset`), or the raw `.unitypackage` itself
+  (extracted to a temp dir automatically; very large packs — beyond ~4 GB
+  extracted — must be pre-extracted).
 - `--scene` — e.g. `scenes/demo.unity` (case-insensitive path suffix) or the
-  asset guid.
+  asset guid. Repeatable: each `--scene` converts one scene in the same run,
+  with shared materials/textures emitted once and each `.scene` output
+  byte-identical to a standalone single-scene run (`--out` is single-scene
+  only; multi-scene runs use the default `<Scene>_unity.scene` naming).
+- `--list-scenes` — inventory mode: print one JSON object (`scenes` with
+  name/path/guid, `assetCounts` by type, `totalAssets`) and exit without
+  converting.
+- `--json` — machine-readable stdout for editor/tool integration: JSON lines
+  `{"phase","step","total","detail"}` during the run (`total: null` for
+  unbounded item streams like texture encodes), then one final
+  `{"phase":"summary", ok, scenes:[...], materials, outputs:[{path,kind}]}`
+  object carrying per-scene counts, the honest-drop report, and every file
+  the conversion wrote. Human diagnostics stay on stderr.
 - `--project` — target engine project dir. Uses
   `<project>/AssetDatabase.assetdb` for mesh resolution (override with
   `--assetdb`) and defaults output to `<project>/assets/<Scene>_unity.scene`.
