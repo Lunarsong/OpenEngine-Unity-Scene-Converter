@@ -313,3 +313,130 @@ test('end-to-end: CLI emits conj rotation, preserves negative scale, prints bann
         fs.rmSync(tmp, { recursive: true, force: true });
     }
 });
+
+// ------------- multi-directional: all enabled, sun anchor = strongest --------
+// The engine lights up to 4 directionals (strongest-first; cascaded shadows
+// from the primary only — RenderServices::PackForwardLightDirectionals). The
+// converter emits every enabled directional ENABLED and binds the
+// SkyEnvironment sun anchor to the strongest (luma x intensity), so the anchor
+// and the engine's primary shading/shadow pick coincide. A stderr NOTE fires
+// only when the scene carries more enabled directionals than the engine cap.
+function buildDirectionalFixture(dir, sceneName, fillCount) {
+    const guid = '00000000000000000000000000abcd02';
+    const gdir = path.join(dir, guid);
+    fs.mkdirSync(gdir, { recursive: true });
+    fs.writeFileSync(path.join(gdir, 'pathname'), `Assets/Scenes/${sceneName}\n`);
+    const lines = [
+        '%YAML 1.1',
+        '%TAG !u! tag:unity3d.com,2011:',
+        // Strong sun: shadow-casting, intensity 3.16 (the Demo_unity shape).
+        '--- !u!1 &300',
+        'GameObject:',
+        '  m_Name: Sun',
+        '  m_IsActive: 1',
+        '--- !u!4 &302',
+        'Transform:',
+        '  m_GameObject: {fileID: 300}',
+        '  m_LocalRotation: {x: 0.061370693, y: 0.96439517, z: -0.20186353, w: -0.15945758}',
+        '  m_LocalPosition: {x: 0, y: 10, z: 0}',
+        '  m_LocalScale: {x: 1, y: 1, z: 1}',
+        '  m_Father: {fileID: 0}',
+        '--- !u!108 &301',
+        'Light:',
+        '  m_GameObject: {fileID: 300}',
+        '  m_Enabled: 1',
+        '  m_Type: 1',
+        '  m_Color: {r: 0.48, g: 0.58, b: 1, a: 1}',
+        '  m_Intensity: 3.16',
+        '  m_Range: 10',
+        '  m_Shadows:',
+        '    m_Type: 2',
+    ];
+    // Weak fills: enabled, no shadows, intensity 0.96 — the shipped-scene
+    // shape that used to steal the shading UBO pre-fix.
+    for (let i = 0; i < fillCount; ++i) {
+        const go = 400 + i * 10;
+        lines.push(
+            `--- !u!1 &${go}`,
+            'GameObject:',
+            `  m_Name: Fill${i === 0 ? '' : i + 1}`,
+            '  m_IsActive: 1',
+            `--- !u!4 &${go + 2}`,
+            'Transform:',
+            `  m_GameObject: {fileID: ${go}}`,
+            '  m_LocalRotation: {x: 0, y: 0.9110671, z: 0.1945784, w: -0.3549998}',
+            '  m_LocalPosition: {x: 0, y: 8, z: 0}',
+            '  m_LocalScale: {x: 1, y: 1, z: 1}',
+            '  m_Father: {fileID: 0}',
+            `--- !u!108 &${go + 1}`,
+            'Light:',
+            `  m_GameObject: {fileID: ${go}}`,
+            '  m_Enabled: 1',
+            '  m_Type: 1',
+            '  m_Color: {r: 0.35, g: 0.81, b: 1, a: 1}',
+            '  m_Intensity: 0.96',
+            '  m_Range: 10',
+            '  m_Shadows:',
+            '    m_Type: 0');
+    }
+    lines.push('');
+    fs.writeFileSync(path.join(gdir, 'asset'), lines.join('\n'));
+    return dir;
+}
+
+test('end-to-end: all enabled directionals stay enabled; sun anchor = strongest', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'convguard-dir-'));
+    try {
+        const pkgDir = buildDirectionalFixture(path.join(tmp, 'pkg'), 'TwoDir.unity', /*fillCount=*/1);
+        const outFile = path.join(tmp, 'out', 'TwoDir_unity.scene');
+        const res = spawnSync(process.execPath,
+            [CONVERT, '--pkg', pkgDir, '--scene', 'TwoDir.unity', '--out', outFile],
+            { encoding: 'utf8' });
+        assert.equal(res.status, 0, `convert.js exited ${res.status}\nstderr:\n${res.stderr}`);
+        assert.doesNotMatch(res.stderr, /extra enabled directional|enabled directionals/,
+            'no demotion warning / cap note may fire within the engine cap');
+
+        const entities = parseScene(fs.readFileSync(outFile, 'utf8'));
+        const byName = (n) => entities.find(e => e.props['Name.value'] === `"${n}"`);
+        const sun = byName('Sun');
+        const fill = byName('Fill');
+        assert.ok(sun && fill, 'both directional entities must be emitted');
+
+        // Both stay enabled: the engine lights N directionals now.
+        assert.notEqual(sun.props['Light.enabled'], 'false', 'Sun must stay enabled');
+        assert.notEqual(fill.props['Light.enabled'], 'false', 'Fill must stay enabled');
+        const enabledDirs = entities.filter(e =>
+            e.props['Light.type'] === '0' && e.props['Light.enabled'] !== 'false');
+        assert.equal(enabledDirs.length, 2, 'every enabled directional must be emitted enabled');
+
+        // The sky sun anchor binds the strongest (luma x intensity) directional.
+        const env = entities.find(e => 'SkyEnvironment.SunLight' in e.props);
+        assert.ok(env, 'SkyEnvironment entity not emitted');
+        assert.equal(env.props['SkyEnvironment.SunLight'], `"${sun.id}"`,
+            'SkyEnvironment.SunLight must bind the strongest directional');
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
+test('end-to-end: >4 enabled directionals emit the engine-cap stderr note, all enabled', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'convguard-dircap-'));
+    try {
+        // Sun + 5 fills = 6 enabled directionals (2 beyond the engine's 4-light cap).
+        const pkgDir = buildDirectionalFixture(path.join(tmp, 'pkg'), 'SixDir.unity', /*fillCount=*/5);
+        const outFile = path.join(tmp, 'out', 'SixDir_unity.scene');
+        const res = spawnSync(process.execPath,
+            [CONVERT, '--pkg', pkgDir, '--scene', 'SixDir.unity', '--out', outFile],
+            { encoding: 'utf8' });
+        assert.equal(res.status, 0, `convert.js exited ${res.status}\nstderr:\n${res.stderr}`);
+        assert.match(res.stderr, /NOTE: 6 enabled directionals; the engine lights the strongest 4/,
+            'engine-cap note missing from stderr');
+
+        const entities = parseScene(fs.readFileSync(outFile, 'utf8'));
+        const enabledDirs = entities.filter(e =>
+            e.props['Light.type'] === '0' && e.props['Light.enabled'] !== 'false');
+        assert.equal(enabledDirs.length, 6, 'all directionals stay enabled even past the cap');
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});

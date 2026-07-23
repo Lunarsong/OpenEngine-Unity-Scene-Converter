@@ -4,8 +4,9 @@ Converts a Unity scene (from an extracted `.unitypackage`, e.g. Synty packs)
 into an OpenEngine/GameEngine text `.scene` file. Scope: **static mesh
 placements + materials (`.mat` → `.material`) + lights (directional/point) +
 scene environment (fog/ambient → day-night classification, physical light
-units)**, with optional URP pipeline/post-processing state pulled from a real
-Unity project.
+units, faithful DDS-cubemap skybox → equirect HDRI)**, with optional URP
+pipeline/post-processing state (colour grading, bloom, vignette, chromatic
+aberration, SSAO) pulled from a real Unity project.
 
 Zero runtime dependencies — Node.js stdlib only.
 
@@ -35,7 +36,7 @@ unity-scene-convert [<pkg-dir> [<project-dir>]] \
                     [--assetdb <file>] [--unity-project <unity-project-dir>] \
                     [--out <output.scene>] [--local-shadows off|faithful] \
                     [--no-copy-textures] [--png] [--texc <TextureCompiler.exe>] \
-                    [--verbose]
+                    [--grade-lut] [--verbose]
 ```
 
 - The first positional argument maps to `--pkg`, the second to `--project`
@@ -55,10 +56,13 @@ unity-scene-convert [<pkg-dir> [<project-dir>]] \
   in what the pack can't: the RP asset's quality-level volume profile
   (layered UNDER the scene's global volume, URP-style), the renderer's SSAO
   feature (→ `AmbientOcclusionEffect`), and shadow/HDR/MSAA facts (logged).
-  `ShadowsMidtonesHighlights` overrides bake to a `.cube` LUT in
-  `<project>/assets/` plus `CubeLutEffect` lines; the authored `lutAsset`
-  path is asset-root-relative (`<Scene>_smh_lut.cube`), which is what the
-  engine's SceneIO resolves it against on load.
+- `--grade-lut` — legacy colour-grade path: bake `ShadowsMidtonesHighlights`
+  to a Resolve-style `.cube` LUT in `<project>/assets/` plus `CubeLutEffect`
+  lines (the authored `lutAsset` path is asset-root-relative,
+  `<Scene>_smh_lut.cube`, which is what the engine's SceneIO resolves it
+  against on load). Without the flag, SMH/LGG wheels map to the engine's
+  native `ColorGradeEffect` three-way bands — see
+  [Colour grading](#colour-grading). Kept for one release of A/B comparison.
 - `--local-shadows` — additional-light (point/spot) shadow policy, see
   [Limitations](#limitations-all-counted-in-stats).
 - `--no-copy-textures` / `--png` / `--texc` — texture handling, see
@@ -106,6 +110,10 @@ conv.emitObjectQuat(qUnity);        // what gets written for an object rotation
 conv.emitDirectionalQuat(worldRot); // what gets written for a directional light
 conv.composeWorldTRS(chain);        // parent-chain TRS composition
 conv.TRANSFORM_CONVENTION_VERSION;  // 'conj-v2 (R(conj(q)) engine)'
+
+// Ambient colour space (see Environment):
+conv.srgbToLinear(x); conv.linearizeAmbientColor(rgb);
+conv.emitAmbientLightLines(renderSettings, verbose);
 
 // Material mapping (unit-testable without running a conversion):
 conv.parseUnityMat(text); conv.classifyMaterial(ctx, info);
@@ -223,11 +231,67 @@ equator/ground, skybox). Classifies day vs night (fog on + dim ambient) and
 maps lights/ambient/sky trim accordingly (see
 [Light units](#light-units)).
 
-**Gaps (honest):** the engine uses a physical procedural atmosphere and cannot
-reproduce a custom aurora/star skybox cubemap; the sun-direction sky region
-blows out under auto-exposure. Ambient is sky-IBL-only, so Unity's tri-color
-gradient ambient is approximated. Fog values are parsed but not emitted as a
-`HeightFogEffect`.
+Ambient: Unity's Flat (`m_AmbientMode` 3) and Trilight/Gradient (mode 1)
+ambient map to the engine's additive `AmbientLight` irradiance floor
+(night-anchored at 60 nits), with an sRGB→linear decode — Unity's
+`m_Ambient*Color` RenderSettings fields serialize the colour **picker's**
+sRGB-encoded floats, not linear light (guarded by
+`tests/ambient-linearization.test.mjs`). Skybox-mode ambient (mode 0) emits
+nothing: that ambient IS the sky IBL.
+
+Directional lights: every enabled directional is emitted enabled; the engine
+lights the strongest 4 (luma × intensity) with cascaded shadows from the
+primary only. The converter anchors `SkyEnvironment.SunLight` to the same
+strongest directional the engine picks, so anchor and shading primary coincide
+by construction; scenes with more than 4 enabled directionals get a stderr
+note.
+
+**Gaps (honest):** fog values are parsed but only Unity *linear* distance fog
+is emitted (as `HeightFogEffect` distance term); the sun-direction sky region
+can blow out under auto-exposure.
+
+### Faithful skybox
+
+`RenderSettings.m_SkyboxMaterial` pointing at the builtin **Skybox/Cubemap**
+shader (fileID 103) over a DDS cubemap converts to the engine's real sky: the
+cubemap is resampled to an equirect Radiance `.hdr` in `Textures_Unity/`
+(D3D face lookup, bilinear in linear space, width `min(8192, 4*faceSize)`),
+and the scene gains a `Skybox` entity that outranks `SkyEnvironment` and
+drives dome + IBL. Unity's dome multiplier `tint × colorspace-double ×
+exposure` is baked per channel into the `.hdr`; a `.bake.json` sidecar skips
+the (slow) resample on re-runs when source and parameters are unchanged. The
+emitted `SkyEnvironment` stays as the sun link and fail-visible fallback
+(missing HDRI → procedural sky, never a black dome). Other skybox shader
+families (6-sided/procedural/panoramic) fall back to the mood translation and
+warn. Guarded by `tests/sky-pipeline.test.mjs`.
+
+### Colour grading
+
+Unity volume grades map to the engine's native `ColorGradeEffect`, a unified
+three-way corrector graded in ACEScct-shaped log space
+(`ColorGradeEffect.gradeInLog = true`):
+
+- **ShadowsMidtonesHighlights** — URP's wheel prep (verbatim
+  `ColorUtils.PrepareShadowsMidtonesHighlights`) yields per-channel linear
+  multipliers; a multiply by *k* becomes a log-domain band offset
+  `log2(k)/17.52/0.5`, split into master lightness (channel mean) + chroma
+  (zero-mean remainder). All-neutral wheels are a bit-exact no-op.
+- **LiftGammaGain** — via ASC CDL: Gain→Highlights is an exact multiply;
+  Lift→Shadows and Gamma→Midtones are linearised to their
+  mid-grey-referenced multiplier. Composes additively (log domain) with SMH
+  when both are authored.
+- **ColorAdjustments** — saturation carries 1:1; contrast carries the FULL
+  URP percentage (`1 + pct/100`) since both grade in log around ACEScc
+  mid-grey. Hue shift is honestly *dropped* (no engine hue channel yet).
+- **ChromaticAberration** — Unity's normalized `[0,1]` intensity maps onto
+  the engine's absolute pixel range (`[0,12]` px, linear).
+
+Anything else the user authored in a volume (SplitToning, ChannelMixer,
+ColorCurves, Bloom tint, ColorAdjustments colorFilter, …) is recorded and
+printed unconditionally in a **"recognized settings dropped"** summary at the
+end of every conversion — silently dropping authored intent is the
+converter's worst failure mode. Guarded by `tests/color-grade-mapping.test.mjs`
+and `tests/volume-drop-reporting.test.mjs`.
 
 ## Surface shaders
 
@@ -306,12 +370,15 @@ MeshRenderer.receiveShadows = true
 ## Development
 
 ```
-npm test    # golden guard tests (transform convention, shader refresh)
+npm test    # golden guard tests (transform convention, ambient colour space,
+            # sky pipeline, colour grading, drop reporting, shader refresh)
 ```
 
 Tests build synthetic Unity fixtures at runtime — the repository contains no
 Unity Editor content and no licensed asset-pack content, and contributions
-must keep it that way.
+must keep it that way. (Numeric ground truths — a handful of quaternion and
+colour-swatch float values recorded from a reference conversion — are settings
+values, not assets.)
 
 **Phase 2 (planned):** the GameEngine repo currently carries its own copy of
 this converter (`Tools/ai/unity-scene-convert/`); a follow-up switches the

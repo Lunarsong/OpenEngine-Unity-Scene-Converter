@@ -22,14 +22,19 @@
 //   unity-scene-convert --pkg <extracted-pkg-dir> --scene <scene path suffix|guid>
 //                       --project <target-project-dir> [--assetdb <file>]
 //                       [--unity-project <unity-project-dir>]
-//                       [--out <output.scene>] [--verbose]
+//                       [--out <output.scene>] [--grade-lut] [--verbose]
 // (or: node src/convert.js <same flags>)
+//
+// --grade-lut: bake Unity ShadowsMidtonesHighlights to a .cube LUT (legacy
+//   tonemap-coupled path) instead of the default native ColorGradeEffect
+//   three-way bands. Kept for one release of A/B comparison; native is preferred.
 
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { parseUnityYaml } = require('./unityyaml');
+const skybox = require('./skybox');
 
 // ---------------------------------------------------------------- CLI ------
 function parseArgs(argv) {
@@ -39,6 +44,7 @@ function parseArgs(argv) {
         if (k === '--verbose') { a.verbose = true; continue; }
         if (k === '--no-copy-textures') { a['no-copy-textures'] = true; continue; }
         if (k === '--png') { a.png = true; continue; }
+        if (k === '--grade-lut') { a['grade-lut'] = true; continue; }
         if (!k.startsWith('--')) fail(`Unknown arg: ${k}`);
         a[k.slice(2)] = argv[++i];
     }
@@ -151,6 +157,19 @@ function warn(msg, verbose) {
     if (verbose) console.error('WARN: ' + msg);
 }
 
+// Recognized-but-dropped Unity settings: things the converter understood in the
+// source but did NOT carry into the engine scene (a Unity volume grade with no
+// engine mapping, a sub-setting of a partially-translated component, ...). These
+// are collected separately from generic warnings so the final report can print
+// an honest "what didn't carry over" summary UNCONDITIONALLY — silently dropping
+// authored intent is the converter's worst failure mode. `kind` groups the line
+// in the report; `detail` is the human-readable specifics.
+const droppedSettings = [];
+function noteDropped(kind, detail, verbose) {
+    droppedSettings.push({ kind, detail });
+    if (verbose) console.error(`DROP: ${kind}: ${detail}`);
+}
+
 let nodeCounter = 0;
 function makeNode(name) {
     return {
@@ -194,10 +213,11 @@ function readTRS(node, t) {
 }
 
 // Parse Unity RenderSettings (fog + ambient + skybox) into a plain struct and
-// classify the scene as day/night. The engine has NO flat ambient (all ambient
-// is sky-IBL, #433) and uses a physical procedural atmosphere — it cannot
-// reproduce a custom Unity skybox cubemap — so we translate the MOOD: fog
-// colour/range + a moonlight-scaled sun for night scenes.
+// classify the scene as day/night. Skybox handling: a builtin Skybox/Cubemap
+// material now converts FAITHFULLY (resolveSceneSkybox: DDS cubemap -> equirect
+// HDRI on Components::Skybox); anything else still translates the MOOD only
+// (fog colour/range + a moonlight-scaled sun for night scenes), because the
+// engine's alternatives are the procedural atmosphere or an equirect HDRI.
 function parseRenderSettings(d) {
     const col = (c) => c ? [asNum(c.r, 0), asNum(c.g, 0), asNum(c.b, 0)] : null;
     const sky = col(d.m_AmbientSkyColor);
@@ -256,13 +276,6 @@ function parseVolumeProfile(text) {
         overrides[name] = fields;
     }
     return overrides;
-}
-
-// sRGB EOTF. URP stores some post params as gamma-space numbers and converts
-// at dispatch — notably Bloom threshold (BloomPostProcessPass.cs:
-// `threshold = Mathf.GammaToLinearSpace(bloom.threshold.value)`).
-function srgbToLinear(x) {
-    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
 }
 
 // Flatten URP's volume-stack semantics for two parsed profiles: `over` (the
@@ -436,6 +449,134 @@ function bakeSmhCubeLut(smh, file) {
                 lines.push(`${o[0].toFixed(6)} ${o[1].toFixed(6)} ${o[2].toFixed(6)}`);
             }
     fs.writeFileSync(file, lines.join('\n') + '\n');
+}
+
+// -------- Unity colour-grade wheels -> native ColorGradeEffect bands --------
+//
+// Slice 1's ColorGradeEffect is a unified three-way corrector graded in an
+// ACEScct-shaped LOG space: each band carries an RGB *chroma offset* (0 = neutral)
+// plus a *master lightness* (0 = neutral), summed in the log domain and scaled by
+// the shader's kGradeOffsetScale (0.5) at the band peak (hdr_color_fx.frag /
+// ColorGradeParamsUBO.h). Unity's SMH/LGG wheels are per-channel operators on
+// (mostly) linear light; we transfer them into that log-offset band model instead
+// of baking a tonemap-coupled .cube LUT.
+//
+// Common currency = the log-multiply identity: a linear multiply by k is an ADD of
+// log2(k)/kGradeEncSlope on the encoded axis (EncodeGradeLog body =
+// (log2(x)+9.72)/17.52). Pre-dividing by the shader's 0.5 offset scale yields the
+// stored wheel-space offset. Splitting per-channel offsets into their mean (=master
+// lightness) + zero-mean remainder (=chroma) is exactly the native band's
+// (Lightness, Color) decomposition, so an all-neutral wheel is a bit-exact no-op.
+const kGradeEncSlope = 17.52;    // EncodeGradeLog body denominator (ACEScct/ACEScc)
+const kGradeOffsetScale = 0.5;   // hdr_color_fx.frag kGradeOffsetScale
+const kGradeMidGrey = 0.18;      // exposed mid-grey == the engine's log pivot
+const kGradeOffsetClamp = 1.0;   // keep wheel-space offsets sane (|offset| <= 1)
+const kRec709Luma = [0.2126729, 0.7151522, 0.0721750]; // Unity ColorUtils.Luminance
+
+// A per-channel effective LINEAR multiplier (neutral = [1,1,1]) -> native band
+// { color:[r,g,b] chroma offset, lightness master }. Exact for genuine multiplies
+// (SMH, LGG gain); additive (lift) and power (gamma) operators are linearised to
+// their mid-grey-referenced multiplier before this call.
+function bandFromMultiplier(m) {
+    const o = m.map(v => Math.log2(Math.max(v, 1e-6)) / kGradeEncSlope / kGradeOffsetScale);
+    const master = (o[0] + o[1] + o[2]) / 3;
+    const clamp = v => Math.max(-kGradeOffsetClamp, Math.min(kGradeOffsetClamp, v));
+    return { color: o.map(v => clamp(v - master)), lightness: clamp(master) };
+}
+
+// URP core ColorUtils.PrepareShadowsMidtonesHighlights (verbatim): sRGB->linear on
+// the wheel colour, +w (x4 when positive), clamp at 0. Per-channel MULTIPLIER
+// (neutral (1,1,1) since GammaToLinear(1)=1, w=0). srgbToLinear == GammaToLinearSpace
+// for the [0,1] wheel colours Unity's picker produces.
+function prepSmhWheel(v) {
+    const a = Array.isArray(v) ? v : [1, 1, 1, 0];
+    const w = (a[3] || 0) * ((a[3] || 0) < 0 ? 1 : 4);
+    return [0, 1, 2].map(i => Math.max(srgbToLinear(a[i]) + w, 0));
+}
+
+// URP core ColorUtils.PrepareLiftGammaGain (verbatim). Produces ASC-CDL SOP:
+// gain = per-channel slope (multiply), lift = per-channel offset (add), gamma =
+// per-channel power exponent (already inverted -> out = in^gamma). Wheel .w is the
+// master slider. Neutrals: lift 0, gamma 1, gain 1.
+function prepLiftGammaGain(liftV, gammaV, gainV) {
+    const lum = v => kRec709Luma[0] * v[0] + kRec709Luma[1] * v[1] + kRec709Luma[2] * v[2];
+    const la = Array.isArray(liftV) ? liftV : [1, 1, 1, 0];
+    const ga = Array.isArray(gammaV) ? gammaV : [1, 1, 1, 0];
+    const na = Array.isArray(gainV) ? gainV : [1, 1, 1, 0];
+    let lift = [srgbToLinear(la[0]) * 0.15, srgbToLinear(la[1]) * 0.15, srgbToLinear(la[2]) * 0.15];
+    const lumL = lum(lift), lw = la[3] || 0;
+    lift = lift.map(v => v - lumL + lw);
+    let gamma = [srgbToLinear(ga[0]) * 0.8, srgbToLinear(ga[1]) * 0.8, srgbToLinear(ga[2]) * 0.8];
+    const lumG = lum(gamma), gw = (ga[3] || 0) + 1;
+    gamma = gamma.map(v => 1 / Math.max(v - lumG + gw, 1e-3));
+    let gain = [srgbToLinear(na[0]) * 0.8, srgbToLinear(na[1]) * 0.8, srgbToLinear(na[2]) * 0.8];
+    const lumN = lum(gain), nw = (na[3] || 0) + 1;
+    gain = gain.map(v => v - lumN + nw);
+    return { lift, gamma, gain };
+}
+
+// Unity ShadowsMidtonesHighlights -> three native bands (multiply -> log-offset).
+function smhToBands(smh) {
+    return {
+        shadows: bandFromMultiplier(prepSmhWheel(smh.shadows)),
+        midtones: bandFromMultiplier(prepSmhWheel(smh.midtones)),
+        highlights: bandFromMultiplier(prepSmhWheel(smh.highlights)),
+    };
+}
+
+// Unity LiftGammaGain -> three native bands via ASC CDL. Gain(slope)->Highlights is
+// an exact multiply. Lift(offset)->Shadows and Gamma(power)->Midtones are linearised
+// to their mid-grey-referenced effective multiplier (lift: 1 + lift/mid; gamma:
+// mid^(exp-1)) so hue / master / band-placement transfer faithfully; the distinct
+// additive/power response curves collapse into the offset-only band (an A/B
+// refinement, and inert for every shipped Synty pack -- none author LGG).
+function lggToBands(lgg) {
+    const p = prepLiftGammaGain(lgg.lift, lgg.gamma, lgg.gain);
+    const liftMul = p.lift.map(v => 1 + v / kGradeMidGrey);
+    const gammaMul = p.gamma.map(e => Math.pow(kGradeMidGrey, e - 1));
+    return {
+        shadows: bandFromMultiplier(liftMul),    // Lift  -> Shadows
+        midtones: bandFromMultiplier(gammaMul),  // Gamma -> Midtones
+        highlights: bandFromMultiplier(p.gain),  // Gain  -> Highlights
+    };
+}
+
+// Compose two band sets. Both are log-domain offsets, so per-channel addition is
+// the correct composition when a volume authors BOTH SMH and LGG.
+function addBands(a, b) {
+    const add = (x, y) => ({
+        color: [x.color[0] + y.color[0], x.color[1] + y.color[1], x.color[2] + y.color[2]],
+        lightness: x.lightness + y.lightness,
+    });
+    return {
+        shadows: add(a.shadows, b.shadows),
+        midtones: add(a.midtones, b.midtones),
+        highlights: add(a.highlights, b.highlights),
+    };
+}
+
+function bandsAreNeutral(bands, eps = 1e-5) {
+    const n = b => Math.abs(b.color[0]) < eps && Math.abs(b.color[1]) < eps
+        && Math.abs(b.color[2]) < eps && Math.abs(b.lightness) < eps;
+    return n(bands.shadows) && n(bands.midtones) && n(bands.highlights);
+}
+
+// Native ColorGradeEffect band lines. Schema keys (BuiltInSceneSchemas.cpp): split
+// vector as <band>ColorR/G/B + <band>Lightness. Zero channels are omitted (schema
+// default is 0), keeping the emitted block to the values that actually carry.
+function emitColorGradeBandLines(bands) {
+    const L = [];
+    const eps = 1e-5;
+    const emit = (name, b) => {
+        if (Math.abs(b.color[0]) >= eps) L.push(`ColorGradeEffect.${name}ColorR = ${fmtF(b.color[0])}`);
+        if (Math.abs(b.color[1]) >= eps) L.push(`ColorGradeEffect.${name}ColorG = ${fmtF(b.color[1])}`);
+        if (Math.abs(b.color[2]) >= eps) L.push(`ColorGradeEffect.${name}ColorB = ${fmtF(b.color[2])}`);
+        if (Math.abs(b.lightness) >= eps) L.push(`ColorGradeEffect.${name}Lightness = ${fmtF(b.lightness)}`);
+    };
+    emit('shadows', bands.shadows);
+    emit('midtones', bands.midtones);
+    emit('highlights', bands.highlights);
+    return L;
 }
 
 // ------------------------------------------------- FBX node scan -----------
@@ -1164,6 +1305,142 @@ const sanitizeName = (s) => s.replace(/["\\]/g, "'").replace(/[\r\n]/g, ' ');
 // (Name.value keeps the full instance name for the hierarchy).
 const meshMatchName = (s) => sanitizeName((s || '').replace(/ \(\d+\)$/, ''));
 
+// Ambient floor (opt-in AmbientLight component): the ADDITIVE analogue of the sky's
+// multiplicative AmbientTint. Unity's flat/gradient ambient is display-referred fill light;
+// we map it to a scene-linear irradiance floor added to the diffuse term (ibl.glsl
+// GE_AmbientFloor). Intensity is the nit level Color x Intensity / 203 resolves to on the
+// shared reference-white anchor (see AmbientLight.h). The 60-nit anchor comes from the
+// gradient-sky finding that a full ambient around this level reads as a believable night
+// fill; it is a per-scene art knob, not a physical derivation.
+//   Unity m_AmbientMode: 0 = Skybox (omit — that ambient IS the sky IBL), 1 = Trilight/Gradient
+//   -> Trilight, 3 = Flat/Color -> Flat (Unity stores the flat colour in m_AmbientSkyColor).
+// This REPLACES the SkyEnvironment.AmbientTint* emission for these modes so a converted scene
+// never carries a double ambient (multiplicative tint AND additive floor); the multiplicative
+// AmbientTint stays a hand-authoring feature the converter simply no longer emits.
+//
+// Colour space: Unity's m_Ambient*Color RenderSettings fields serialize the colour PICKER'S
+// sRGB-encoded floats, not linear light (proof: ElvenRealm Demo.unity's trilight sky is
+// {0.5082908, 0.39215687, 0.85882354} — exactly the 8-bit swatch {130,100,219}/255 on g/b).
+// AmbientLight colours are authored-linear (AmbientLight.h), so decode here, with the same
+// LDR/HDR rule as linearizeUnityTint: swatches with every channel <= 1 decode per-channel,
+// any channel > 1 means an HDR picker value already in linear working space — pass through.
+// The decode lives HERE at emission, NOT in parseRenderSettings: isNight's 0.6 luminance
+// threshold was calibrated on the display-referred (sRGB) values and must keep seeing them.
+// Module-level (not an emitScene closure) so tests/ambient-linearization.test.mjs can guard
+// the exact emitted numbers.
+function linearizeAmbientColor(c) {
+    if (c[0] > 1 || c[1] > 1 || c[2] > 1) return c; // HDR: already linear
+    return [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
+}
+
+// ---- faithful Unity skybox (pipeline rationale + conventions: skybox.js) ---
+// 8K equirect cap matches the ElvenRealm source at the equator exactly: a
+// 2048px/face cubemap spans 4 faces around the horizon = 8192 texels. The
+// actual width is min(cap, 4 * faceSize) — undersampling drops star points,
+// oversampling wastes cook time and VRAM.
+const kSkyboxEquirectMaxWidth = 8192;
+
+// Resolve RenderSettings.m_SkyboxMaterial to a baked equirect .hdr in the
+// project's Textures_Unity/, or null (with a warning) when the scene has no
+// skybox, the material is not builtin Skybox/Cubemap over a DDS cubemap, or
+// there is no project texture dir. On null the emitted scene simply keeps the
+// procedural SkyEnvironment sky — the pre-skybox behavior, never a black dome.
+// A .bake.json sidecar records the bake parameters so a re-run only skips the
+// (slow, ~1 min) resample when source AND parameters are unchanged.
+function resolveSceneSkybox(ctx) {
+    const rs = ctx.renderSettings;
+    if (!rs || !rs.skyboxGuid) return null;
+    const entry = ctx.pkg.get(rs.skyboxGuid);
+    if (!entry) {
+        warn(`RenderSettings skybox material ${rs.skyboxGuid} not in package — procedural sky stays`, ctx.verbose);
+        return null;
+    }
+    let mat = null;
+    try { mat = skybox.parseUnitySkyboxMat(fs.readFileSync(path.join(entry.dir, 'asset'), 'utf8')); }
+    catch (e) { warn(`skybox material ${entry.assetPath} unreadable: ${e.message}`, ctx.verbose); return null; }
+    if (!mat || !mat.isBuiltinCubemap || !mat.texGuid) {
+        warn(`skybox material ${entry.assetPath} is not builtin Skybox/Cubemap with a bound _Tex `
+           + `(shader fileID ${mat ? mat.shaderFileId : '?'}) — procedural sky stays`, ctx.verbose);
+        return null;
+    }
+    const texEntry = ctx.pkg.get(mat.texGuid);
+    if (!texEntry) {
+        warn(`skybox cubemap ${mat.texGuid} not in package — procedural sky stays`, ctx.verbose);
+        return null;
+    }
+    if (!/\.dds$/i.test(texEntry.assetPath)) {
+        warn(`skybox cubemap ${texEntry.assetPath}: only DDS cubemaps are supported — procedural sky stays`, ctx.verbose);
+        return null;
+    }
+    if (!ctx.texCopyDir) {
+        warn(`skybox conversion needs the project texture dir (run with --project, without --no-copy-textures)`, ctx.verbose);
+        return null;
+    }
+    if (mat.rotationDegrees !== 0) {
+        warn(`skybox _Rotation=${mat.rotationDegrees}: the Y-rotation sign parity between Unity's dome `
+           + `rotation and Skybox.RotationDegrees is UNVERIFIED (no reference scene uses it) — verify visually`, ctx.verbose);
+    }
+    const stem = path.basename(texEntry.assetPath, path.extname(texEntry.assetPath));
+    const outName = `${stem}_equirect.hdr`;
+    const outAbs = path.join(ctx.texCopyDir, outName);
+    const relPath = `${kTexCopyRel}/${outName}`;
+    const mult = skybox.computeSkyboxMultiplier(mat.tint, mat.exposure);
+    const srcAbs = path.join(texEntry.dir, 'asset');
+    const metaAbs = outAbs + '.bake.json';
+    const bakeParams = { maxWidth: kSkyboxEquirectMaxWidth, multiplier: mult, srcMtimeMs: 0 };
+    try { bakeParams.srcMtimeMs = fs.statSync(srcAbs).mtimeMs; } catch (_) { /* stat at read below */ }
+    let reused = false;
+    try {
+        const prior = JSON.parse(fs.readFileSync(metaAbs, 'utf8'));
+        reused = fs.statSync(outAbs).size > 0 && JSON.stringify(prior) === JSON.stringify(bakeParams);
+    } catch (_) { /* no sidecar/output -> bake */ }
+    let stats = null;
+    if (!reused) {
+        console.error(`Skybox: baking ${texEntry.assetPath} -> ${relPath} `
+                    + `(mult ${mult.map(fmtF).join('/')})...`);
+        const t0 = Date.now();
+        try {
+            stats = skybox.convertDdsCubemapToEquirectHdr(
+                fs.readFileSync(srcAbs), outAbs, kSkyboxEquirectMaxWidth, mult);
+        } catch (e) {
+            warn(`skybox cubemap conversion failed: ${e.message} — procedural sky stays`, ctx.verbose);
+            return null;
+        }
+        fs.writeFileSync(metaAbs, JSON.stringify(bakeParams));
+        console.error(`Skybox: baked ${stats.faceSize}px/face -> ${stats.width}x${stats.height} `
+                    + `in ${((Date.now() - t0) / 1000).toFixed(1)}s (mean L ${stats.meanLuminance.toExponential(3)}, `
+                    + `peak L ${stats.maxLuminance.toFixed(4)} scene-linear)`);
+    }
+    return { relPath, guid: deterministicGuid(relPath), rotationDegrees: mat.rotationDegrees, reused, stats };
+}
+function emitAmbientLightLines(rs, verbose) {
+    const out = [];
+    const kAmbientFloorNits = 60;
+    // Day latent (same class as the daylight point-light branch in the light emitter): the
+    // 60-nit anchor is a NIGHT operating point. No converted day scene uses ambientMode 1/3
+    // yet; when one does, an additive 60-nit floor is imperceptible under a bright day sky
+    // and is NOT a calibrated replacement for the multiplicative tint it displaces — warn
+    // instead of inventing a day constant.
+    const ambientEmitted = !!(rs && (rs.ambientMode === 1 || rs.ambientMode === 3));
+    if (ambientEmitted && !rs.isNight) {
+        warn(`day-scene ambient emission is uncalibrated: AmbientLight.Intensity is set to the `
+           + `night ${kAmbientFloorNits}-nit anchor, which is imperceptible under a day sky — `
+           + `tune AmbientLight.Intensity in the converted scene by hand`, verbose);
+    }
+    if (rs && rs.ambientMode === 1 && rs.ambientSky && rs.ambientEquator && rs.ambientGround) {
+        out.push(`AmbientLight.Mode = 1`);
+        out.push(`AmbientLight.SkyColor = ${fmt3(linearizeAmbientColor(rs.ambientSky))}`);
+        out.push(`AmbientLight.EquatorColor = ${fmt3(linearizeAmbientColor(rs.ambientEquator))}`);
+        out.push(`AmbientLight.GroundColor = ${fmt3(linearizeAmbientColor(rs.ambientGround))}`);
+        out.push(`AmbientLight.Intensity = ${kAmbientFloorNits}`);
+    } else if (rs && rs.ambientMode === 3 && rs.ambientSky) {
+        out.push(`AmbientLight.Mode = 0`);
+        out.push(`AmbientLight.Color = ${fmt3(linearizeAmbientColor(rs.ambientSky))}`);
+        out.push(`AmbientLight.Intensity = ${kAmbientFloorNits}`);
+    }
+    return out;
+}
+
 function emitScene(ctx, st, sceneName) {
     const out = [];
     out.push(`[scene name="${sanitizeName(sceneName)}" version=1]`);
@@ -1175,7 +1452,8 @@ function emitScene(ctx, st, sceneName) {
         localShadowTiers: [0, 0, 0, 0], // shadowed locals emitted, indexed by engine tier (1=Low 2=Medium 3=High)
         resolvedMeshes: 0, unresolvedMeshes: 0, materialParts: 0, materialsBound: 0, hiddenSkyFx: 0,
         uniqueFbx: new Set(), unresolvedFbxStems: new Set(),
-        sunEntityId: null, sunIntensity: -1, environment: false,
+        sunEntityId: null, environment: false,
+        directionalsBeyondEngineCap: 0,
     };
 
     // keep = has a (convertible) mesh or light, or any descendant kept.
@@ -1211,6 +1489,40 @@ function emitScene(ctx, st, sceneName) {
         for (let cur = nid; cur; cur = st.nodes.get(cur).father) chain.unshift(st.nodes.get(cur));
         return composeWorldTRS(chain);
     };
+
+    // The engine lights up to 4 directional lights per world (the strongest,
+    // per RenderServices::PackForwardLightDirectionals — luma x intensity
+    // ordering; all converter-emitted directionals share the same Lux scale
+    // and default range), with cascaded shadows from the primary only. Every
+    // enabled directional is emitted enabled; this scan only picks the
+    // STRONGEST one so the SkyEnvironment sun anchor and the engine's primary
+    // shading/shadow pick coincide. Strength mirrors the engine's ordering;
+    // ties keep the first in traversal order (the engine tie-break is the
+    // lower entity id, i.e. emitted first).
+    const kEngineDirectionalCap = 4;
+    let strongestDirectionalNid = null;
+    {
+        const dirLuma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        const enabledDirs = [];
+        const scanDirs = (nid) => {
+            const n = st.nodes.get(nid);
+            if (!n || !n.active) return; // inactive subtrees never emit
+            if (n.light && n.light.type === 'directional' && n.light.enabled)
+                enabledDirs.push({ nid, name: n.name || 'Unnamed', strength: dirLuma(n.light.color) * n.light.intensity });
+            n.children.forEach(scanDirs);
+        };
+        for (const r of st.rootIds) scanDirs(r);
+        if (enabledDirs.length > 0) {
+            let best = enabledDirs[0];
+            for (const d of enabledDirs) if (d.strength > best.strength) best = d;
+            strongestDirectionalNid = best.nid;
+        }
+        if (enabledDirs.length > kEngineDirectionalCap) {
+            emitted.directionalsBeyondEngineCap = enabledDirs.length - kEngineDirectionalCap;
+            console.error(`NOTE: ${enabledDirs.length} enabled directionals; the engine lights the `
+                + `strongest ${kEngineDirectionalCap} (shadows from the primary only) — the rest will not contribute`);
+        }
+    }
 
     let idCounter = 0;
     const emitNode = (nid, parentEntityId) => {
@@ -1356,12 +1668,12 @@ function emitScene(ctx, st, sceneName) {
             }
             if (!n.light.enabled) out.push(`Light.enabled = false`);
             emitted.lights++;
-            // Remember the primary sun (strongest shadow-casting directional,
-            // falling back to strongest directional) for the SkyEnvironment link.
-            if (isDir && n.light.enabled) {
-                const score = n.light.intensity + (n.light.shadows ? 1e6 : 0);
-                if (score > emitted.sunIntensity) { emitted.sunIntensity = score; emitted.sunEntityId = eid; }
-            }
+            // The SkyEnvironment sun anchor binds the STRONGEST enabled
+            // directional (luma x intensity, the strongestDirectionalNid scan
+            // above) — the same light the engine picks as its shading/shadow
+            // primary, so anchor and primary coincide by construction.
+            if (isDir && n.light.enabled && nid === strongestDirectionalNid)
+                emitted.sunEntityId = eid;
         }
         if (wasMesh) emitted.meshEntities++; else emitted.groupEntities++;
         out.push('');
@@ -1433,49 +1745,7 @@ function emitScene(ctx, st, sceneName) {
         out.push(`Transform.scale = (1, 1, 1)`);
         out.push(`SkyEnvironment.SunLight = "${emitted.sunEntityId}"`);
         out.push(`SkyEnvironment.TimeOfDayDrivesSunLight = false`);
-        // Ambient floor (opt-in AmbientLight component): the ADDITIVE analogue of the sky's
-        // multiplicative AmbientTint. Unity's flat/gradient ambient is display-referred fill light;
-        // we map it to a scene-linear irradiance floor added to the diffuse term (ibl.glsl
-        // GE_AmbientFloor). Colours pass through as linear (matching how the fog colour is treated
-        // above); Intensity is the nit level Color x Intensity / 203 resolves to on the shared
-        // reference-white anchor (see AmbientLight.h). The 60-nit anchor comes from the gradient-sky
-        // finding that a full ambient around this level reads as a believable night fill; it is a
-        // per-scene art knob, not a physical derivation.
-        //   Unity m_AmbientMode: 0 = Skybox (omit — that ambient IS the sky IBL), 1 = Trilight/Gradient
-        //   -> Trilight, 3 = Flat/Color -> Flat (Unity stores the flat colour in m_AmbientSkyColor).
-        // This REPLACES the SkyEnvironment.AmbientTint* emission for these modes so a converted scene
-        // never carries a double ambient (multiplicative tint AND additive floor); the multiplicative
-        // AmbientTint stays a hand-authoring feature the converter simply no longer emits.
-        {
-            const rs = ctx.renderSettings;
-            const kAmbientFloorNits = 60;
-            // Colour space: linear pass-through is CORRECT — Unity's HDR ambient RenderSettings
-            // fields (m_Ambient*Color) serialize linear floats, matching the shipped AmbientTint
-            // convention. Do not add an sRGB decode here.
-            //
-            // Day latent (same class as the daylight point-light branch above): the 60-nit anchor
-            // is a NIGHT operating point. No converted day scene uses ambientMode 1/3 yet; when one
-            // does, an additive 60-nit floor is imperceptible under a bright day sky and is NOT a
-            // calibrated replacement for the multiplicative tint it displaces — warn instead of
-            // inventing a day constant.
-            const ambientEmitted = !!(rs && (rs.ambientMode === 1 || rs.ambientMode === 3));
-            if (ambientEmitted && !rs.isNight) {
-                warn(`day-scene ambient emission is uncalibrated: AmbientLight.Intensity is set to the `
-                   + `night ${kAmbientFloorNits}-nit anchor, which is imperceptible under a day sky — `
-                   + `tune AmbientLight.Intensity in the converted scene by hand`, ctx.verbose);
-            }
-            if (rs && rs.ambientMode === 1 && rs.ambientSky && rs.ambientEquator && rs.ambientGround) {
-                out.push(`AmbientLight.Mode = 1`);
-                out.push(`AmbientLight.SkyColor = ${fmt3(rs.ambientSky)}`);
-                out.push(`AmbientLight.EquatorColor = ${fmt3(rs.ambientEquator)}`);
-                out.push(`AmbientLight.GroundColor = ${fmt3(rs.ambientGround)}`);
-                out.push(`AmbientLight.Intensity = ${kAmbientFloorNits}`);
-            } else if (rs && rs.ambientMode === 3 && rs.ambientSky) {
-                out.push(`AmbientLight.Mode = 0`);
-                out.push(`AmbientLight.Color = ${fmt3(rs.ambientSky)}`);
-                out.push(`AmbientLight.Intensity = ${kAmbientFloorNits}`);
-            }
-        }
+        out.push(...emitAmbientLightLines(ctx.renderSettings, ctx.verbose));
         // Night sky/IBL trim used to be emitted here (SkyExposureTrim = 2,
         // IblIntensity = 0.4). Removed: dimming the sky/IBL is pixel-inert under
         // auto-exposure (the meter re-normalizes it) — the lever that survives
@@ -1575,29 +1845,78 @@ function emitScene(ctx, st, sceneName) {
             if (bloom.dirtIntensity)
                 warn(`volume Bloom lens-dirt (intensity ${bloom.dirtIntensity}) not translated (non-physical overlay; URP adds dirtTex * intensity * bloom on top of the bloom term)`, ctx.verbose);
         }
-        // URP ColorAdjustments contrast/saturation are percentage offsets
-        // (-100..100 around 0); ColorGradeEffect uses multipliers around 1.
-        // Both grade in HDR before the tonemap. Saturation carries 1:1.
-        // Contrast does NOT: URP applies it in ACEScc log space around log
-        // mid-grey, ours is linear around 0.5, and scene-referred night
-        // content sits far below that pivot — the linear form crushes
-        // shadows roughly twice as hard for the same percentage (ER
-        // warehouse-wide A/B: 1.12 buried the footpath, 1.06 matches the
-        // intended pop with shadows readable). Half the percentage is the
-        // calibrated approximation.
-        if (colAdj) {
-            const cg = [];
-            if (typeof colAdj.contrast === 'number' && colAdj.contrast !== 0)
-                cg.push(`ColorGradeEffect.contrast = ${fmtF(1 + colAdj.contrast / 200)}`);
-            if (typeof colAdj.saturation === 'number' && colAdj.saturation !== 0)
-                cg.push(`ColorGradeEffect.saturation = ${fmtF(1 + colAdj.saturation / 100)}`);
-            if (typeof colAdj.hueShift === 'number' && colAdj.hueShift !== 0)
-                cg.push(`ColorGradeEffect.hue = ${fmtF(colAdj.hueShift)}`);
-            if (cg.length) {
-                out.push(`ColorGradeEffect.enabled = true`);
-                out.push(...cg);
+        // Unity colour grade -> the slice-1 native ColorGradeEffect (unified
+        // three-way log corrector). ShadowsMidtonesHighlights and LiftGammaGain
+        // map to the three bands (below); ColorAdjustments contrast/saturation map
+        // to the global knobs. All emit into ONE ColorGradeEffect block.
+        const cgLines = [];
+
+        // SMH / LGG -> native bands (preferred). The legacy tonemap-coupled .cube
+        // LUT bake is kept as an opt-in fallback (--grade-lut) for one release of
+        // A/B before deletion, per the color-grading design (D4/D6).
+        const smh = (vol.ShadowsMidtonesHighlights && vol.ShadowsMidtonesHighlights.active)
+            ? vol.ShadowsMidtonesHighlights : null;
+        const smhLive = smh && [smh.shadows, smh.midtones, smh.highlights].some(w => Array.isArray(w) && !isIdentityWheel(w));
+        const lgg = (vol.LiftGammaGain && vol.LiftGammaGain.active) ? vol.LiftGammaGain : null;
+        const lggLive = lgg && [lgg.lift, lgg.gamma, lgg.gain].some(w => Array.isArray(w) && !isIdentityWheel(w));
+
+        if (ctx.gradeLutFallback && smhLive && ctx.projectDir) {
+            // Opt-in legacy path: bake SMH to a Resolve-style .cube (see
+            // bakeSmhCubeLut). ASSET-ROOT-relative name: SceneIO resolves relative
+            // lutAsset paths against <project>/assets, so "assets/x.cube" would
+            // double to <project>/assets/assets/x.cube and fail GUID resolution.
+            const lutName = `${sceneName}_smh_lut.cube`;
+            bakeSmhCubeLut(smh, path.join(ctx.projectDir, 'assets', lutName));
+            out.push(`CubeLutEffect.enabled = true`);
+            out.push(`CubeLutEffect.stackOrder = 0`);
+            out.push(`CubeLutEffect.intensity = 1`);
+            out.push(`CubeLutEffect.inputEncoding = 0`);
+            out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
+            warn(`volume ShadowsMidtonesHighlights baked to assets/${lutName} (--grade-lut legacy path)`, ctx.verbose);
+            if (lggLive)
+                noteDropped('volume grade', 'LiftGammaGain (native-band mapping disabled by --grade-lut; the LUT fallback bakes SMH only)', ctx.verbose);
+        } else {
+            // Native three-way bands. Unlike the LUT bake these need no --project
+            // dir (no file is written), so SMH/LGG now carry for pkg-only runs too.
+            let bands = null;
+            if (smhLive) bands = smhToBands(smh);
+            if (lggLive) bands = bands ? addBands(bands, lggToBands(lgg)) : lggToBands(lgg);
+            if (bands && !bandsAreNeutral(bands)) {
+                cgLines.push(...emitColorGradeBandLines(bands));
+                warn(`volume grade: ${[smhLive && 'ShadowsMidtonesHighlights', lggLive && 'LiftGammaGain'].filter(Boolean).join(' + ')} -> native ColorGradeEffect three-way bands`, ctx.verbose);
             }
         }
+
+        // ColorAdjustments contrast/saturation are percentage offsets (-100..100
+        // around 0); ColorGradeEffect uses multipliers around 1, both graded in HDR
+        // before the tonemap. Saturation carries 1:1 (luma-weighted lerp in both).
+        // Contrast now carries the FULL percentage: slice 1 grades contrast in LOG
+        // space around encoded mid-grey (kPivot = EncodeGradeLog(0.18) = 0.4136 =
+        // ACEScc mid-grey), the SAME space and pivot URP uses (contrast = 1 +
+        // pct/100). The old converter HALVED it (/200) to compensate for the
+        // then-linear ColorGradeEffect pivot (linear-around-0.5 crushed scene-
+        // referred shadows ~2x too hard); the log-space unification removes that
+        // mismatch, so the /200 workaround is retired -> /100 (exact URP match).
+        if (colAdj) {
+            if (typeof colAdj.contrast === 'number' && colAdj.contrast !== 0)
+                cgLines.push(`ColorGradeEffect.contrast = ${fmtF(1 + colAdj.contrast / 100)}`);
+            if (typeof colAdj.saturation === 'number' && colAdj.saturation !== 0)
+                cgLines.push(`ColorGradeEffect.saturation = ${fmtF(1 + colAdj.saturation / 100)}`);
+        }
+
+        if (cgLines.length) {
+            out.push(`ColorGradeEffect.enabled = true`);
+            // Grade in log (slice-1 default) — matches Unity's ACEScc log grading.
+            out.push(`ColorGradeEffect.gradeInLog = true`);
+            out.push(...cgLines);
+        }
+
+        // ColorAdjustments Hue Shift no longer maps: the unified ColorGradeEffect
+        // dropped the single-range Hue field (the new schema consume-DROPS a stray
+        // `hue` key), and hue rotation is a later grade slice. Report it honestly
+        // rather than emit a key the schema silently swallows.
+        if (colAdj && typeof colAdj.hueShift === 'number' && colAdj.hueShift !== 0)
+            noteDropped('volume grade', 'ColorAdjustments.hueShift (unified ColorGradeEffect has no hue channel yet — deferred to a later grade slice)', ctx.verbose);
         // URP SSAO renderer feature (--unity-project) -> engine GTAO.
         // URP: ao = pow(saturate(occ * Intensity * falloff * rcpSamples), 0.6)
         // — Intensity scales the occlusion amount ~linearly below saturation.
@@ -1615,30 +1934,8 @@ function emitScene(ctx, st, sceneName) {
             if (typeof ssao.radius === 'number')
                 out.push(`AmbientOcclusionEffect.radius = ${fmtF(ssao.radius)}`);
         }
-        // URP ShadowsMidtonesHighlights -> baked .cube LUT + CubeLutEffect
-        // (see bakeSmhCubeLut for the space/placement argument). The demo
-        // values are NOT mild: midtones w +0.176 preps to a x1.704 midtone
-        // lift (positive w scales x4), shadows tint blue at -0.096.
-        const smh = (vol.ShadowsMidtonesHighlights && vol.ShadowsMidtonesHighlights.active)
-            ? vol.ShadowsMidtonesHighlights : null;
-        const smhLive = smh && [smh.shadows, smh.midtones, smh.highlights].some(w => Array.isArray(w) && !isIdentityWheel(w));
-        if (smhLive && ctx.projectDir) {
-            // The authored path must be ASSET-ROOT-relative: SceneIO resolves
-            // relative lutAsset paths against <project>/assets, so a
-            // project-root-relative "assets/x.cube" doubles up to
-            // <project>/assets/assets/x.cube, GUID resolution misses, and the
-            // scene refuses to load ("Invalid CubeLutEffect.lutasset").
-            const lutName = `${sceneName}_smh_lut.cube`;
-            bakeSmhCubeLut(smh, path.join(ctx.projectDir, 'assets', lutName));
-            out.push(`CubeLutEffect.enabled = true`);
-            out.push(`CubeLutEffect.stackOrder = 0`);
-            out.push(`CubeLutEffect.intensity = 1`);
-            out.push(`CubeLutEffect.inputEncoding = 0`);
-            out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
-            warn(`volume ShadowsMidtonesHighlights baked to assets/${lutName}`, ctx.verbose);
-        } else if (smhLive) {
-            warn(`volume ShadowsMidtonesHighlights not translated (no --project dir to bake the .cube into)`, ctx.verbose);
-        }
+        // (ShadowsMidtonesHighlights / LiftGammaGain are mapped to native
+        // ColorGradeEffect bands in the unified colour-grade block above.)
         // URP Vignette -> VignetteEffect (LDR stack, post-tonemap, same slot as
         // URP's uber-post). The engine shader is URP-exact:
         // color *= lerp(vigColor, 1, pow(saturate(1 - dot(d,d)), smoothness*5)),
@@ -1658,18 +1955,58 @@ function emitScene(ctx, st, sceneName) {
                 out.push(`VignetteEffect.colorB = ${fmtF(vig.color[2])}`);
             }
         }
-        // Remaining overrides with no engine mapping. Warn only when a field
-        // actually deviates from neutral — an active component whose fields
-        // are all default (common once the RP-asset profile layer is merged
-        // in) applies nothing.
-        for (const untranslated of ['LiftGammaGain', 'WhiteBalance', 'ChromaticAberration']) {
-            const comp = vol[untranslated];
-            if (!comp || !comp.active) continue;
-            const nonNeutral = Object.entries(comp).some(([k, v]) => k !== 'active'
-                && (Array.isArray(v) ? !isIdentityWheel(v) : (typeof v === 'number' && v !== 0)));
-            if (nonNeutral)
-                warn(`volume ${untranslated} override not translated (no engine equivalent yet)`, ctx.verbose);
+        // URP ChromaticAberration -> ChromaticAberrationEffect (LDR stack, same
+        // slot as URP's uber-post lens pass). Unity's `intensity` is a normalized
+        // [0,1] ClampedFloatParameter whose screen offset is resolution-RELATIVE
+        // (URP spreads samples by intensity * 0.05 of screen width); the engine's
+        // Intensity is the max red/blue separation in ABSOLUTE pixels, clamped
+        // [0, kIntensityMax]. There is no unit-exact conversion without assuming a
+        // target resolution, so map the normalized range onto the engine's full
+        // pixel range (off->off, max->max, linear between): faithful in intent and
+        // proportion. The exact pixel scale is an A/B-calibration refinement
+        // (converter-improvement-plan) — the shipped Synty packs author no CA, so
+        // this path is inert for them. Only emit when actually authored.
+        const kEngineCaIntensityMax = 12; // ChromaticAberrationEffect::kIntensityMax
+        const ca = (vol.ChromaticAberration && vol.ChromaticAberration.active) ? vol.ChromaticAberration : null;
+        if (ca && typeof ca.intensity === 'number' && ca.intensity > 0) {
+            const px = Math.min(kEngineCaIntensityMax, Math.max(0, ca.intensity * kEngineCaIntensityMax));
+            out.push(`ChromaticAberrationEffect.enabled = true`);
+            out.push(`ChromaticAberrationEffect.intensity = ${fmtF(px)}`);
         }
+        // Honest drop reporting. Everything above is what the converter KNOWS how
+        // to translate; anything else the user authored in the volume is dropped.
+        // Enumerate every parsed override (parseVolumeProfile keeps only fields the
+        // user explicitly set, m_OverrideState=1) and record the ones with no
+        // engine mapping so the final report can list what didn't carry over.
+        // Keyed off the actual profile contents, not a hand-maintained deny-list,
+        // so a newly-authored SplitToning/ChannelMixer/ColorCurves is never
+        // silently swallowed the way the old fixed list swallowed everything but
+        // three names.
+        const kTranslatedVolumeComponents = new Set([
+            'ColorAdjustments',            // postExposure/contrast/saturation (hueShift reported below)
+            'Bloom', 'Vignette', 'ChromaticAberration',
+            'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands (or --grade-lut .cube fallback)
+            'LiftGammaGain',               // -> native ColorGradeEffect bands via ASC CDL
+            'Tonemapping',                 // deliberately substituted with ACES (documented divergence)
+        ]);
+        const componentHasEffect = (comp) => Object.entries(comp).some(([k, v]) => k !== 'active'
+            && (Array.isArray(v) ? !isIdentityWheel(v)
+                : typeof v === 'number' ? v !== 0
+                : typeof v === 'string' ? v.length > 0 : false));
+        for (const [name, comp] of Object.entries(vol)) {
+            if (!comp || !comp.active || kTranslatedVolumeComponents.has(name)) continue;
+            if (componentHasEffect(comp))
+                noteDropped('volume grade', `${name} (authored override, no engine mapping yet)`, ctx.verbose);
+        }
+        // Sub-settings of components we translate only partially. ColorAdjustments'
+        // Color Filter is an HDR pre-tonemap tint multiply; the engine has a
+        // ColorFilterEffect but it sits in the LDR (post-tonemap) stack, so the
+        // faithful placement is a judgment call spec'd in the plan — report it as
+        // dropped rather than emit a mis-placed tint.
+        if (colAdj && Array.isArray(colAdj.colorFilter) && !isIdentityWheel(colAdj.colorFilter))
+            noteDropped('volume grade', 'ColorAdjustments.colorFilter (HDR tint; ColorFilterEffect is LDR-stack — placement TBD)', ctx.verbose);
+        if (bloom && Array.isArray(bloom.tint) && !isIdentityWheel(bloom.tint))
+            noteDropped('volume grade', 'Bloom.tint (colored bloom; BloomEffect has no tint channel yet)', ctx.verbose);
         // Distance fog (slice 5b). Unity's linear distance fog -> the engine's
         // analytical HeightFogEffect, DISTANCE term only. Unity linear fog has no
         // height or sun-scatter component, so we emit neither (the ambient fill
@@ -1752,6 +2089,33 @@ function emitScene(ctx, st, sceneName) {
         out.push('');
         emitted.entities += 2;
         emitted.environment = true;
+    }
+
+    // Faithful Unity skybox: RenderSettings.m_SkyboxMaterial (builtin
+    // Skybox/Cubemap) -> equirect HDRI on Components::Skybox. A valid Skybox
+    // takes priority over SkyEnvironment in SkyEnvironmentSystem and drives
+    // dome + IBL; the SkyEnvironment entity above stays as the sun link and
+    // the fail-visible fallback (HDRI missing/unimported -> procedural sky,
+    // never a black dome). Ambient remains the AmbientLight trilight floor:
+    // Unity ambientMode 1 means the skybox did not feed ambient GI there
+    // either, and the starfield's own IBL contribution is ~0 — consistent.
+    // Emitted OUTSIDE the sun guard: a sunless scene still gets its sky.
+    const skyboxRef = resolveSceneSkybox(ctx);
+    if (skyboxRef) {
+        out.push(`[entity id="e_${++idCounter}"]`);
+        out.push(`Name.value = "Skybox (Unity)"`);
+        out.push(`Transform.position = (0, 0, 0)`);
+        out.push(`Transform.rotation = (0, 0, 0, 1)`);
+        out.push(`Transform.scale = (1, 1, 1)`);
+        out.push(`Skybox.Enabled = true`);
+        out.push(`Skybox.HDRIIntensity = 1`); // Unity tint*colorspace*exposure baked into the .hdr
+        out.push(`Skybox.IblIntensity = 1`);
+        out.push(`Skybox.IblLowerHemisphereDarkness = 0`);
+        out.push(`Skybox.RotationDegrees = ${fmtF(skyboxRef.rotationDegrees)}`);
+        out.push(`Skybox.HDRI = [path="${skyboxRef.relPath}" guid="${skyboxRef.guid}"]`);
+        out.push('');
+        emitted.entities += 1;
+        emitted.skybox = skyboxRef;
     }
     return { text: out.join('\n') + '\n', emitted };
 }
@@ -2693,6 +3057,7 @@ function main(argv = process.argv) {
             fallbackUnmappable: 0, fallbackList: [], byFamily: new Map() },
         projectPipeline: null,
         localShadows,
+        gradeLutFallback: !!args['grade-lut'],  // opt-in legacy SMH .cube bake (A/B vs native bands)
         verbose: !!args.verbose,
     };
     console.error(`Package: ${ctx.pkg.size} assets indexed`);
@@ -2812,6 +3177,10 @@ function main(argv = process.argv) {
         for (const f of ctx.matStats.fallbackList)
             console.log(`  ${f.name}  [shader ${f.shader}]  ${f.reason}`);
     }
+    if (emitted.skybox) {
+        console.log(`skybox: faithful Unity cubemap -> ${emitted.skybox.relPath}`
+            + (emitted.skybox.reused ? ' (bake reused)' : ''));
+    }
     console.log(`mesh refs resolved:        ${emitted.resolvedMeshes}`);
     console.log(`mesh refs UNRESOLVED:      ${emitted.unresolvedMeshes} (${emitted.unresolvedFbxStems.size} unique fbx)`);
     console.log(`unique static fbx used:    ${emitted.uniqueFbx.size}`);
@@ -2819,6 +3188,9 @@ function main(argv = process.argv) {
     console.log(`skipped non-SM fbx nodes:  ${s.skippedNonStaticFbx}`);
     console.log(`skipped inactive meshes:   ${s.skippedInactive}`);
     console.log(`lights converted:          ${emitted.lights} (dir+point; spot/area skipped: ${s.skippedLights})`);
+    if (emitted.directionalsBeyondEngineCap > 0) {
+        console.log(`directionals beyond cap:   ${emitted.directionalsBeyondEngineCap} (engine lights the strongest 4 — shadows from the primary only; the rest will not contribute)`);
+    }
     if (ctx.localShadows === 'off') {
         console.log(`addl-light shadows:        off — ${emitted.suppressedAdditionalLightShadows} source-flagged local shadows suppressed (--local-shadows=off)`);
     } else {
@@ -2841,6 +3213,24 @@ function main(argv = process.argv) {
         console.log('unresolved fbx stems:');
         for (const st2 of [...emitted.unresolvedFbxStems].sort()) console.log('  ' + st2);
     }
+
+    // Honest "what didn't carry over" summary. Printed unconditionally (not gated
+    // on --verbose) so every conversion tells the user which recognized settings
+    // were dropped — grouped by kind, de-duplicated, so a run is self-documenting.
+    if (droppedSettings.length) {
+        console.log('--- recognized settings dropped (no engine mapping) ---');
+        const byKind = new Map();
+        for (const d of droppedSettings) {
+            if (!byKind.has(d.kind)) byKind.set(d.kind, new Set());
+            byKind.get(d.kind).add(d.detail);
+        }
+        for (const [kind, details] of byKind)
+            for (const detail of [...details].sort())
+                console.log(`  [${kind}] ${detail}`);
+    } else {
+        console.log('recognized settings dropped: none');
+    }
+
     if (!ctx.verbose && warnings.length)
         console.error(`(${warnings.length} warnings; rerun with --verbose)`);
 }
@@ -2858,4 +3248,6 @@ module.exports = {
     // Transform convention (exercised by tests/transform-convention.test.mjs).
     TRANSFORM_CONVENTION_VERSION,
     conj, qMul, qRotate, kYFlip, emitObjectQuat, emitDirectionalQuat, composeWorldTRS,
+    // Ambient colour space (exercised by tests/ambient-linearization.test.mjs).
+    srgbToLinear, linearizeAmbientColor, emitAmbientLightLines,
 };
