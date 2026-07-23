@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unity Importer — User Guide</title>
+<style>
+:root {
+    --bg: #0e1013;
+    --panel: #171a1f;
+    --panel-light: #1e2229;
+    --border: #2b313b;
+    --text: #dde3ea;
+    --muted: #8b95a3;
+    --accent: #4c9aff;
+    --danger: #ff6b5e;
+    --bad: #ff6b5e;
+    --ok: #4ade80;
+    --good: #4ade80;
+    --warn: #fbbf24;
+}
+* { box-sizing: border-box; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 40px 24px 80px;
+}
+.wrap { max-width: 980px; margin: 0 auto; }
+h1 { font-size: 30px; margin: 0 0 4px; letter-spacing: -0.5px; }
+h2 {
+    font-size: 22px;
+    margin: 56px 0 16px;
+    padding-top: 24px;
+    border-top: 2px solid var(--border);
+}
+h3 { font-size: 16.5px; margin: 28px 0 10px; color: var(--text); }
+p.lede { color: var(--muted); margin: 0 0 28px; font-size: 13.5px; letter-spacing: 0.4px; text-transform: uppercase; }
+p { margin: 10px 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+code {
+    background: var(--panel-light);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 13px;
+    color: #c9d4e3;
+}
+pre {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #c9d4e3;
+}
+pre code { background: none; border: none; padding: 0; }
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--muted);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 18px 0;
+}
+.panel > :first-child { margin-top: 0; }
+.panel > :last-child { margin-bottom: 0; }
+.panel.ok { border-left-color: var(--ok); }
+.panel.warn { border-left-color: var(--warn); }
+.panel.danger { border-left-color: var(--danger); }
+.panel.decision { border-left-color: var(--accent); background: #16202e; }
+.panel .panel-title { font-weight: 600; font-size: 13px; letter-spacing: 0.6px; text-transform: uppercase; margin-bottom: 6px; }
+.panel.ok .panel-title { color: var(--ok); }
+.panel.warn .panel-title { color: var(--warn); }
+.panel.danger .panel-title { color: var(--danger); }
+.panel.decision .panel-title { color: var(--accent); }
+.pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    vertical-align: middle;
+    text-transform: uppercase;
+}
+.pill.new { background: #123b24; color: var(--ok); }
+.pill.mod { background: #3a2f10; color: var(--warn); }
+.pill.del { background: #3b1714; color: var(--danger); }
+.pill.keep { background: #16283e; color: var(--accent); }
+.steps { counter-reset: step; margin: 24px 0; }
+.step {
+    position: relative;
+    padding: 14px 18px 14px 62px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 12px 0;
+}
+.step::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 16px; top: 15px;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #0b1220;
+    font-weight: 700;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.step h4 { margin: 0 0 6px; font-size: 15px; }
+.step p { margin: 6px 0; color: var(--text); }
+.step .why { color: var(--muted); font-size: 13.5px; }
+figure { margin: 20px 0; }
+figure img {
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: block;
+}
+figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0;
+    font-size: 14px;
+}
+th {
+    text-align: left;
+    background: var(--panel-light);
+    border-bottom: 2px solid var(--border);
+    padding: 8px 12px;
+    font-size: 12.5px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+td { border-bottom: 1px solid var(--border); padding: 8px 12px; vertical-align: top; }
+tr:hover td { background: var(--panel); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+@media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
+.footer { margin-top: 64px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 16px; }
+.kbd {
+    background: var(--panel-light);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0 6px;
+    font-family: Consolas, monospace;
+    font-size: 12.5px;
+}
+ul { margin: 8px 0; padding-left: 22px; }
+li { margin: 4px 0; }
+.mermaid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 20px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Unity Importer — User Guide</h1>
+<p class="lede">USER GUIDE · 2026-07-24 · Unity import pipeline — editor modal · standalone CLI · package manager</p>
+
+<p>
+This guide covers the three ways Unity content and engine extensions enter a project:
+the in-editor <strong>Import Unity Package</strong> modal (shipped in merge #77,
+<code>d10cf450b</code>), the standalone
+<strong>OpenEngine-Unity-Scene-Converter</strong> CLI it wraps, and the engine's
+<strong>Package Manager</strong> for adding packages to a project. A flagged decision
+on whether the importer itself should become a package closes the guide.
+</p>
+
+<!-- ================================================================ -->
+<h2>1 · Importing a Unity package in the editor</h2>
+
+<p>
+The modal converts a Unity scene bundle — a raw <code>.unitypackage</code> (e.g. a Synty
+pack) or an already-extracted bundle folder — into engine assets inside the currently
+open project: text <code>.scene</code> files, <code>StandardPBR</code>
+<code>.material</code> assets, copied/encoded textures, and (where the pack uses them)
+project-side water/waterfall surface shaders.
+</p>
+
+<div class="panel ok">
+    <div class="panel-title">Before you start</div>
+    <ul>
+        <li><strong>Converter must be staged.</strong> The editor spawns a self-contained
+            converter executable at <code>&lt;Editor.exe dir&gt;/Tools/UnityImport/bin/converter.exe</code>,
+            built and staged by <code>cmake/StageUnityConverter.cmake</code>. That build step needs
+            Node.js ≥ 22 <em>on the machine that built the editor</em> — no Node at configure time
+            means the modal opens but reports <em>"Converter tool is not staged."</em></li>
+        <li><strong>TextureCompiler is optional but recommended.</strong> When
+            <code>TextureCompiler.exe</code> sits next to <code>Editor.exe</code>, copied textures
+            are encoded to block-compressed, pre-mipped UASTC KTX2. Without it the import falls
+            back to raw PNG copies. The modal tells you which mode it's in.</li>
+        <li><strong>Import the pack's FBX models first (slice 1).</strong> The converter resolves
+            mesh references by filename stem against the project's
+            <code>AssetDatabase.assetdb</code> — it does not copy FBX files out of the pack yet.
+            Meshes the project hasn't imported come out as unresolved entities (see the limits
+            panel below).</li>
+    </ul>
+</div>
+
+<h3>The flow, step by step</h3>
+
+<div class="steps">
+
+<div class="step">
+    <h4>Open the modal — <strong>Tools ▸ Import Unity Package…</strong></h4>
+    <p>The entry lives in the native menu bar's Tools menu. (For tooling / UI-replay, the
+       same command id <code>0x2100</code> opens it via <code>execute_command</code>.)</p>
+</div>
+
+</div>
+
+<figure>
+    <img src="import-modal-2026-07-23-empty.png" alt="The Import Unity Package modal freshly opened over the editor: empty bundle field, empty scene list, destination pre-filled with the project's Assets folder.">
+    <figcaption>Freshly opened: bundle field empty, scene list empty, destination pre-filled with the open
+    project's <code>Assets</code> folder.</figcaption>
+</figure>
+
+<div class="steps" style="counter-reset: step 1;">
+
+<div class="step">
+    <h4>Pick the bundle</h4>
+    <p><strong>Browse…</strong> opens the native file dialog filtered to
+       <code>*.unitypackage</code>. To import from an <em>extracted bundle folder</em> instead
+       (the output of <code>tar -xzf pack.unitypackage</code>), paste or type the folder path
+       into the field and press <span class="kbd">Enter</span> — committing the field loads the
+       bundle. That paste-a-path affordance exists precisely because the file dialog can't
+       select a directory.</p>
+    <p class="why">Either way, the modal runs the converter in inventory mode
+       (<code>--list-scenes</code>) on a background thread and fills in the scene list. Raw
+       <code>.unitypackage</code> files are extracted to a temp dir automatically; very large
+       packs (&gt; ~4&nbsp;GB extracted) should be pre-extracted and pointed at as a folder.</p>
+</div>
+
+<div class="step">
+    <h4>Choose scenes</h4>
+    <p>Every <code>.unity</code> scene in the bundle appears as a checkbox row (name + pack
+       path), <strong>all selected by default</strong>. The header counts your selection —
+       <em>"Scenes in bundle (2 of 2 selected)"</em> — and the line underneath summarizes the
+       shared asset pool: models, textures and materials are converted <strong>once</strong>
+       no matter how many scenes you tick, and each emitted <code>.scene</code> is byte-identical
+       to a standalone single-scene run.</p>
+</div>
+
+</div>
+
+<figure>
+    <img src="import-modal-2026-07-23-scene-select.png" alt="The modal after loading a bundle: two scenes AlphaTown and BetaCove listed with checkboxes, both selected, shared-asset counts underneath, destination field below.">
+    <figcaption>Bundle loaded (a two-scene test fixture): both scenes checked, selection count in the
+    header, shared-asset counts — <em>1 models · 1 textures · 1 materials</em> — imported once for any
+    subset.</figcaption>
+</figure>
+
+<div class="steps" style="counter-reset: step 3;">
+
+<div class="step">
+    <h4>Confirm the destination</h4>
+    <p>Defaults to the open project's <code>Assets/</code> folder. Edit the field or
+       <strong>Browse…</strong> to pick a subfolder. Outputs preserve the converter's relative
+       layout under the destination — <code>Materials_Unity/</code>,
+       <code>Textures_Unity/</code>, and one <code>&lt;Scene&gt;_unity.scene</code> per selected
+       scene — so the scenes' relative material and texture references resolve in place.</p>
+</div>
+
+<div class="step">
+    <h4>Import — and watch the progress</h4>
+    <p>Hit <strong>Import</strong>. The modal validates first (converter staged, bundle picked,
+       at least one scene selected — problems show as an inline warning, nothing runs). The
+       conversion streams JSON progress: bounded phases drive the bar with
+       <em>phase · detail — step / total</em>, and the unbounded texture-encode stream ticks a
+       <em>"textures: N encoded…"</em> line below it.</p>
+    <p class="why">Under the hood the conversion writes into a timestamped staging folder under
+       the project cache (<code>&lt;cache&gt;/UnityImport/import-&lt;ms&gt;</code>), outside the
+       asset FileWatcher's scope — the project never sees half-written files.</p>
+</div>
+
+<div class="step">
+    <h4>Overwrite confirmation (only when needed)</h4>
+    <p>Before anything moves, every output path is checked against the destination. If files
+       would be replaced, a native dialog lists them (first 12 by name, then a count) and asks
+       <strong>Overwrite / Cancel</strong> — <strong>Cancel is the default</strong>, and choosing
+       it returns you to the config screen with nothing written and the staging folder cleaned
+       up. Re-importing the same pack to the same destination will trigger this; it's the
+       expected refresh path.</p>
+</div>
+
+<div class="step">
+    <h4>Completion — read the honest summary, open a scene if you want</h4>
+    <p>One move pass relocates the staged outputs into the destination, the asset registry is
+       nudged, and the summary appears: scene / entity / material counts, texture stats
+       (encoded, copied, unresolved), a line for <strong>unresolved mesh references</strong> if
+       any, and a <em>"Didn't carry over:"</em> list of everything the converter recognized in
+       the source but dropped — silently discarding authored intent is treated as the worst
+       failure mode, so drops are always reported.</p>
+    <p>Each imported scene gets an <strong>Open &lt;Scene&gt;</strong> button. <strong>Nothing
+       auto-opens</strong> — opening a scene is always your click. <strong>Dismiss</strong>
+       closes the modal and leaves your current scene untouched.</p>
+</div>
+
+</div>
+
+<figure>
+    <img src="import-modal-2026-07-23-complete.png" alt="The completion screen: 'Import complete — 2 scene(s) · 0 entities · 0 materials' with Open AlphaTown and Open BetaCove buttons and a Dismiss button.">
+    <figcaption>Completion screen for the same minimal test fixture (hence the zero entity/material
+    counts): per-scene <em>Open</em> buttons, explicit <em>Dismiss</em>, no auto-open.</figcaption>
+</figure>
+
+<h3>What happens where</h3>
+
+<div class="mermaid-wrap">
+<pre class="mermaid">
+flowchart LR
+    A["Bundle\n.unitypackage or\nextracted folder"] --> B["converter.exe --list-scenes\n(background thread)"]
+    B --> C["Scene multi-select\n+ shared-asset counts"]
+    C --> D["converter.exe --pkg --scene ×N\n--project &lt;stage&gt; --assetdb --json"]
+    D --> E["Staging dir\n&lt;projectCache&gt;/UnityImport/import-&lt;ms&gt;\n(outside FileWatcher)"]
+    E --> F{"Collisions at\ndestination?"}
+    F -- "yes" --> G["Native dialog\nOverwrite / Cancel\n(default Cancel)"]
+    F -- "no" --> H["One move pass\nstage → destination"]
+    G -- "Overwrite" --> H
+    G -- "Cancel" --> I["Stage cleaned,\nback to config"]
+    H --> J["Summary + Open Scene\n(no auto-open)"]
+</pre>
+</div>
+
+<ul>
+    <li>Esc closes the modal while it's idle; Cancel does the same. A run in progress can't be
+        interrupted from the modal yet (see limits).</li>
+    <li>Failures (converter crash, unreadable bundle, non-zero exit) land on a dedicated error
+        screen carrying the converter's stderr tail — copy it into a bug report as-is.</li>
+    <li>Everything the modal does, the CLI does too, with the same flags — the modal literally
+        drives <code>converter.exe --pkg … --scene … --json</code> (§2).</li>
+</ul>
+
+<div class="panel warn">
+    <div class="panel-title">Slice-1 limits — known and honest</div>
+    <ul>
+        <li><strong>The scene list clips past ~7 rows.</strong> The list is a fixed-height
+            (180&nbsp;px) box with overflow hidden and no scrollbar yet. For packs with many
+            scenes, either import in passes or use the CLI's repeatable <code>--scene</code>
+            flag (§2).</li>
+        <li><strong>Pack model-seeding is deferred.</strong> The v2.0 design's Phase A — copying
+            the pack's FBX models into the project before conversion — did not ship in slice 1.
+            Mesh references resolve by filename stem (case-insensitive) against the project's
+            existing <code>AssetDatabase.assetdb</code>; anything not already imported surfaces
+            in the completion summary as an unresolved count and lands in the
+            <code>.scene</code> as an entity with a <code>; UNRESOLVED …</code> comment instead
+            of a MeshRenderer. Import the pack's FBX files first, then run the import (or re-run
+            it — re-import overwrites cleanly via the collision dialog).</li>
+        <li><strong>No mid-run cancel.</strong> Once a conversion starts, Esc/Cancel are inert
+            until it finishes or fails.</li>
+        <li><strong>Converter scope limits apply</strong> (all counted in the drop report):
+            skinned meshes, characters, cameras, particles, colliders, MonoBehaviours and
+            terrain are skipped; lights convert directional + point only; LODGroups emit LOD0.
+            See the converter README for the full list.</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<h2>2 · The CLI / standalone package</h2>
+
+<p>
+The converter is an open-source, standalone Node.js package —
+<a href="https://github.com/Lunarsong/OpenEngine-Unity-Scene-Converter">Lunarsong/OpenEngine-Unity-Scene-Converter</a>
+(MIT, zero runtime dependencies, Node ≥ 22). The public repo is the upstream and now carries
+the editor protocol (<code>--list-scenes</code>, <code>--json</code>) the modal depends on;
+the engine repo's <code>Tools/ai/unity-scene-convert/</code> is a mirror of it and is what the
+editor build bundles into <code>converter.exe</code>.
+</p>
+
+<h3>Install</h3>
+
+<pre><code># global install straight from GitHub
+npm install -g github:Lunarsong/OpenEngine-Unity-Scene-Converter
+
+# or from a clone (puts unity-scene-convert / unity-scene-validate on PATH)
+git clone https://github.com/Lunarsong/OpenEngine-Unity-Scene-Converter.git
+cd OpenEngine-Unity-Scene-Converter
+npm link</code></pre>
+
+<h3>Convert</h3>
+
+<pre><code># see what's in a pack (JSON inventory: scenes + asset counts)
+unity-scene-convert --list-scenes ./ElvenRealm.unitypackage
+
+# convert two scenes into an engine project
+unity-scene-convert --pkg ./ElvenRealm.unitypackage \
+    --scene scenes/AlphaTown.unity --scene scenes/BetaCove.unity \
+    --project C:/Projects/MyGame
+
+# machine-readable progress + summary (what the editor modal consumes)
+unity-scene-convert --pkg ./pack --scene demo.unity --project ./proj --json
+
+# legacy colour-grade path: bake SMH wheels to a .cube LUT instead of
+# the native ColorGradeEffect mapping (kept for one release of A/B)
+unity-scene-convert --pkg ./pack --project ./proj --grade-lut</code></pre>
+
+<table>
+    <tr><th>Flag</th><th>What it does</th></tr>
+    <tr><td><code>--pkg</code></td><td>Raw <code>.unitypackage</code> (auto-extracted to temp; pre-extract packs beyond ~4&nbsp;GB) or an extracted bundle folder. First positional argument maps here.</td></tr>
+    <tr><td><code>--scene</code></td><td>Case-insensitive path suffix (<code>scenes/demo.unity</code>) or Unity guid. <strong>Repeatable</strong> — shared materials/textures emit once across all scenes in the run. Omitted + exactly one scene in the pack → auto-picked.</td></tr>
+    <tr><td><code>--project</code></td><td>Target engine project. Mesh resolution reads <code>&lt;project&gt;/AssetDatabase.assetdb</code> (override: <code>--assetdb</code>); outputs default under <code>&lt;project&gt;/assets/</code>.</td></tr>
+    <tr><td><code>--list-scenes</code></td><td>Inventory mode: one JSON object (scenes with name/path/guid, asset counts) and exit. No conversion.</td></tr>
+    <tr><td><code>--json</code></td><td>Editor protocol: JSON-lines progress (<code>{"phase","step","total","detail"}</code>) then a final summary object with per-scene counts, the honest-drop report, and every file written. Human diagnostics stay on stderr.</td></tr>
+    <tr><td><code>--texc</code> / <code>--png</code></td><td>Texture encoding: point at <code>TextureCompiler.exe</code> for KTX2/BC7 (also found via <code>GE_TEXC</code>), or force raw PNG copies.</td></tr>
+    <tr><td><code>--grade-lut</code></td><td>Bake ShadowsMidtonesHighlights to a Resolve-style <code>.cube</code> LUT + <code>CubeLutEffect</code> instead of the native <code>ColorGradeEffect</code> three-way mapping.</td></tr>
+    <tr><td><code>--unity-project</code></td><td>Path to a real Unity project — pulls what a <code>.unitypackage</code> never ships: the active URP asset's volume profile, SSAO renderer feature, shadow/HDR/MSAA facts.</td></tr>
+    <tr><td><code>--local-shadows</code></td><td>Point/spot shadow policy: <code>faithful</code> (default, carries flags + resolution tier) or <code>off</code>.</td></tr>
+    <tr><td><code>--out</code></td><td>Explicit output path — single-scene runs only.</td></tr>
+</table>
+
+<p>Validation ships alongside: <code>unity-scene-validate &lt;output.scene&gt; &lt;source.unity&gt;</code>
+runs the engine's SceneIO structural rules plus a transform cross-check against the Unity source.</p>
+
+<div class="panel ok">
+    <div class="panel-title">When to prefer the CLI over the modal</div>
+    <ul>
+        <li><strong>Output-project workflows</strong> — converting into a project that isn't the
+            one open in the editor (or with no editor running at all). The modal always targets
+            the open project; the CLI targets whatever <code>--project</code> says.</li>
+        <li><strong>CI and batch regeneration</strong> — <code>--json</code> gives scriptable
+            progress + a machine-readable summary; re-runs are deterministic and the skybox bake
+            caches via a <code>.bake.json</code> sidecar.</li>
+        <li><strong>Many-scene packs</strong> — repeatable <code>--scene</code> sidesteps the
+            modal's clipped scene list (slice-1 limit).</li>
+        <li><strong>URP post-processing pulls</strong> — <code>--unity-project</code> has no
+            modal equivalent yet.</li>
+        <li><strong>Colour-grade A/B</strong> — <code>--grade-lut</code> vs the native mapping.</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<h2>3 · Adding packages via the package interface</h2>
+
+<p>
+Separate from Unity imports, the engine has its own project package system. This section
+documents the flow as it exists today, with the <code>eztree</code> Tree Generator as the
+worked example of an editor-extending package.
+</p>
+
+<h3>Opening the Package Manager</h3>
+
+<p>
+Click the <strong>Packages</strong> button (box icon) in the top toolbar — it opens the
+dockable <strong>Package Manager</strong> panel. The panel is a live view over two things:
+the project's package manifest and what is actually mounted right now.
+</p>
+
+<h3>The manifest — <code>Packages/manifest.json</code></h3>
+
+<pre><code>{
+  "dependencies": {
+    "ocean-pack":  "file:../SharedPackages/OceanPack",
+    "debug-tools": "embedded",
+    "fx-lib":      "git+https://github.com/team/fx-lib.git#v1.2.0"
+  },
+  "disabled": ["heavy-megapack"]
+}</code></pre>
+
+<ul>
+    <li><strong><code>file:&lt;path&gt;</code></strong> — a local package folder (absolute or project-relative).</li>
+    <li><strong><code>embedded</code></strong> — lives inside the project at <code>&lt;project&gt;/Packages/&lt;name&gt;/</code>.</li>
+    <li><strong><code>git+…#ref</code></strong> — a git URL pinned to a ref; resolved into a lock pin, offline once warm.</li>
+    <li><strong>Engine packages</strong> — every <code>&lt;Editor.exe dir&gt;/EnginePackages/&lt;dir&gt;/package.json</code>
+        joins the set implicitly, as if the manifest declared it. A project declaration of the
+        same <em>name</em> shadows the engine copy (that's how you develop against a checkout of
+        an engine package), and <code>"disabled"</code> opts one out per project like any other
+        package.</li>
+</ul>
+
+<h3>Panel actions</h3>
+
+<table>
+    <tr><th>Action</th><th>Effect</th></tr>
+    <tr><td><strong>Add</strong></td><td>Type a package folder path or a <code>git+https://…#ref</code> URL, or <strong>Browse</strong> to a local folder. Writes the dependency into the manifest.</td></tr>
+    <tr><td><strong>Enable / Disable</strong> (Toggle)</td><td>Adds/removes the package from the manifest's <code>"disabled"</code> array. The opt-out for packages you can't remove — including engine-shipped ones.</td></tr>
+    <tr><td><strong>Remove</strong></td><td>Deletes the dependency and its lock pin from the manifest (click twice — deliberate friction).</td></tr>
+    <tr><td><strong>Check Updates / Re-pin</strong></td><td>Git packages: query the remote, rewrite the manifest's <code>#ref</code>; the lock pin re-resolves.</td></tr>
+    <tr><td><strong>Locate / Relocate</strong></td><td>Rewrite a <code>file:</code> path (the package name must match). Missing packages get synthesized rows offering exactly this instead of vanishing.</td></tr>
+</table>
+
+<div class="panel warn">
+    <div class="panel-title">The drift model — changes apply on project reopen</div>
+    <p>Every panel action edits the manifest/lock <strong>immediately</strong>, but asset mounts
+    and code modules only follow the manifest on the <strong>next project open</strong>. Live
+    remounting would eject loaded assets under your open scene and swap script ALCs mid-session,
+    so the panel instead shows per-row <span class="pill mod">REOPEN</span> badges and a status
+    line — <em>"changes saved; REOPEN the project to apply"</em> — for any row whose manifest
+    state has drifted from what's mounted. Save your scene, reopen the project, and the badges
+    clear.</p>
+</div>
+
+<h3>What a package can carry — <code>eztree</code> as the worked example</h3>
+
+<p>
+A package is a folder with a <code>package.json</code>. Beyond assets, it can declare
+<strong>code modules</strong> — including <strong>Editor-kind</strong> modules that extend the
+editor itself. The engine-shipped Tree Generator is the canonical shape:
+</p>
+
+<pre><code>// EnginePackages/eztree/package.json
+{
+  "name": "eztree",
+  "version": "1.1.0",
+  "displayName": "Tree Generator",
+  "assets": "Assets/",
+  "alwaysShip": true,
+  "modules": [
+    { "name": "eztree-runtime", "kind": "Runtime", "lang": "Cpp",
+      "root": "Native/", "prebuilt": "Binaries/Runtime/" },
+    { "name": "eztree-editor",  "kind": "Editor",  "lang": "Cpp",
+      "root": "Editor/", "prebuilt": "Binaries/Editor/" }
+  ]
+}</code></pre>
+
+<ul>
+    <li><strong><code>assets</code></strong> — mounted as an asset source when the project opens.</li>
+    <li><strong>Runtime modules</strong> — game-side code; ship with builds.</li>
+    <li><strong>Editor modules</strong> — editor-side extensions, loaded only in the editor. The
+        eztree editor DLL links the <strong>EditorSDK</strong> import library and
+        <em>self-registers via static initialization</em> on DLL load: a one-liner registrar
+        calls <code>RegisterEZTreeEditorPlugin()</code>, which lands its component traits, pick
+        provider, and stats panel in the <em>host's</em> editor registries.
+        <code>EditorPluginRegistry</code> replays the inspector pass for plugins that register
+        after editor startup, so late-loading packages integrate cleanly.</li>
+    <li><strong><code>prebuilt</code></strong> — pre-compiled binaries per module, so consuming a
+        package doesn't require building its native code.</li>
+    <li><strong>C# modules</strong> feed the ScriptManager at mount and trigger a whole-graph
+        script reload (packages compile in topo order, then project scripts, one ALC swap) — no
+        script edit needed to activate them.</li>
+</ul>
+
+<div class="panel">
+    <div class="panel-title">Honest status: the import modal is built-in, not a package</div>
+    <p>Today the Unity importer ships <strong>compiled into Editor.exe</strong> — the modal, its
+    subprocess plumbing, and the staged <code>Tools/UnityImport/</code> converter are core editor
+    pieces, not a package. You will not find "Unity Importer" in the Package Manager, and you
+    can't disable it there. Whether that should change is exactly the open decision below.</p>
+</div>
+
+<!-- ================================================================ -->
+<hr>
+
+<div class="footer">
+    Unity Importer — User Guide · v1.0 · 2026-07-24 ·
+    Sources: <code>Apps/Editor/Source/Panels/UnityImportModal.cpp</code> (merge #77,
+    <code>d10cf450b</code>) · <code>cmake/StageUnityConverter.cmake</code> ·
+    <code>Tools/ai/unity-scene-convert/</code> ·
+    <code>Apps/Editor/Source/Packages/PackageManagerController.cpp</code> ·
+    <code>EnginePackages/eztree/</code> · converter-ui design v2.0 (2026-07-23)
+</div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+        primaryColor: '#1e2229',
+        primaryTextColor: '#dde3ea',
+        primaryBorderColor: '#2b313b',
+        lineColor: '#8b95a3',
+        secondaryColor: '#171a1f',
+        tertiaryColor: '#16202e',
+        fontSize: '13px'
+    }
+});
+</script>
+</body>
+</html>
