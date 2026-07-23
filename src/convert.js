@@ -1241,9 +1241,10 @@ const fmt4 = (a) => `(${fmtF(a[0])}, ${fmtF(a[1])}, ${fmtF(a[2])}, ${fmtF(a[3])}
 // standard-convention quaternions. Emitting conj(q) = (-x,-y,-z,w) makes
 // FromTRS(conj(q)) = R(q), so parent-offset composition (q^-1 v q with the
 // conjugated q) and rendered orientation both match Unity exactly. Verified
-// numerically on the observatory-telescope chain (parent yaw -11.1deg): the
-// engine rotated the child offset by +11.1deg; the Unity-minus-engine world
-// position residual (-11.459, 0, -2.403) matches conj-vs-non-conj to 3 dp.
+// numerically on a reference parent-child chain: with a small parent Y-yaw the
+// engine rotated the child offset by the OPPOSITE yaw, and the Unity-minus-
+// engine world position residual (confined to the XZ plane, y == 0) matched
+// the predicted conj-vs-non-conj divergence to 3 dp.
 const conj = (q) => [-q[0], -q[1], -q[2], q[3]];
 
 // ---- transform convention (see the FromTRS note above conj) --------------
@@ -1319,8 +1320,8 @@ const meshMatchName = (s) => sanitizeName((s || '').replace(/ \(\d+\)$/, ''));
 // AmbientTint stays a hand-authoring feature the converter simply no longer emits.
 //
 // Colour space: Unity's m_Ambient*Color RenderSettings fields serialize the colour PICKER'S
-// sRGB-encoded floats, not linear light (proof: ElvenRealm Demo.unity's trilight sky is
-// {0.5082908, 0.39215687, 0.85882354} — exactly the 8-bit swatch {130,100,219}/255 on g/b).
+// sRGB-encoded floats, not linear light (established against a reference scene whose trilight
+// channels serialized as EXACT 8-bit picker swatch fractions n/255 — display-referred values).
 // AmbientLight colours are authored-linear (AmbientLight.h), so decode here, with the same
 // LDR/HDR rule as linearizeUnityTint: swatches with every channel <= 1 decode per-channel,
 // any channel > 1 means an HDR picker value already in linear working space — pass through.

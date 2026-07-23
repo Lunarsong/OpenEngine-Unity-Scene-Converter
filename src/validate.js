@@ -2,8 +2,8 @@
 // Validation for convert.js output:
 //  1) structural checks per SceneIO.cpp rules (unique ids, parents exist &
 //     precede, tuple shapes, quat norm, asset refs well-formed)
-//  2) cross-check: named prefab instances in Demo.unity vs emitted entities
-//     (position/rotation/scale within tolerance)
+//  2) cross-check: named prefab instances in the source .unity vs emitted
+//     entities (position/rotation/scale within tolerance)
 const fs = require('fs');
 const path = require('path');
 const { parseUnityYaml } = require('./unityyaml');

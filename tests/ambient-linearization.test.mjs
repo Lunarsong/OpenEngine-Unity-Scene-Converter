@@ -1,14 +1,14 @@
 // Regression guards for the AmbientLight colour-space conversion.
 //
 // Unity's RenderSettings m_Ambient*Color fields serialize the colour picker's
-// sRGB-ENCODED floats, not linear light. Ground truth: ElvenRealm Demo.unity's
-// trilight sky serializes {r: 0.5082908, g: 0.39215687, b: 0.85882354} — g and
-// b are EXACTLY the 8-bit picker swatch {130,100,219}/255, which only happens
-// when the stored floats are the display-referred values. The engine's
-// AmbientLight colours are authored-linear (AmbientLight.h), so the converter
-// must decode sRGB->linear at emission. A prior converter revision emitted the
-// sRGB floats as linear (the comment even asserted pass-through was correct);
-// these tests fail loudly if that regresses.
+// sRGB-ENCODED floats, not linear light. (Established against a licensed
+// reference scene whose values are not reproduced here: its serialized floats
+// were EXACTLY 8-bit picker swatch fractions n/255, which only happens when
+// the stored values are display-referred.) The engine's AmbientLight colours
+// are authored-linear (AmbientLight.h), so the converter must decode
+// sRGB->linear at emission. A prior converter revision emitted the sRGB floats
+// as linear (the comment even asserted pass-through was correct); these tests
+// fail loudly if that regresses.
 //
 // Run:  npm test    (from the package root)
 
@@ -26,30 +26,36 @@ const { srgbToLinear, linearizeAmbientColor, emitAmbientLightLines } = convert;
 
 const approx = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol;
 
-// The ElvenRealm Demo.unity night trilight, exactly as serialized in the scene.
-const kDemoSky = [0.5082908, 0.39215687, 0.85882354];   // picker {130,100,219}
-const kDemoEquator = [0.5566038, 0.128649, 0.3665028];  // picker {142, 33, 93}
-const kDemoGround = [0.21960783, 0.6713297, 1];         // picker { 56,171,255}
+// Synthesized trilight (no scene-recorded values). Sky uses exact binary
+// fractions; equator is an exact 8-bit picker swatch {200,64,32}/255
+// serialized Unity-style (8 significant digits) to mirror the real
+// serialization shape; ground exercises the EOTF's linear segment
+// (0.003 <= 0.04045 -> x/12.92) and the exact-1 endpoint.
+const kTriSky = [0.5, 0.25, 0.125];
+const kTriEquator = [0.78431373, 0.25098039, 0.1254902]; // picker {200, 64, 32}
+const kTriGround = [0.003, 0.6, 1];
 
-// IEC 61966-2-1 sRGB EOTF of the exact serialized floats (computed with the
-// piecewise transform; hardcoded so a formula regression cannot self-confirm).
-const kDemoSkyLinear = [0.22179537, 0.12743769, 0.70837580];
-const kDemoEquatorLinear = [0.27022313, 0.01505798, 0.11058984];
-const kDemoGroundLinear = [0.03954623, 0.40823969, 1];
+// IEC 61966-2-1 sRGB EOTF of the exact literals above, computed INDEPENDENTLY
+// of convert.js (x <= 0.04045 ? x/12.92 : ((x+0.055)/1.055)^2.4, evaluated in
+// a separate scratch implementation) and hardcoded so a formula regression in
+// the converter cannot self-confirm.
+const kTriSkyLinear = [0.21404114, 0.05087609, 0.01434987];
+const kTriEquatorLinear = [0.57758045, 0.05126946, 0.01444384];
+const kTriGroundLinear = [0.00023220, 0.31854678, 1];
 
 test('srgbToLinear implements the piecewise IEC 61966-2-1 EOTF', () => {
     assert.equal(srgbToLinear(0), 0);
     assert.equal(srgbToLinear(1), 1);
     assert.ok(approx(srgbToLinear(0.04045), 0.04045 / 12.92)); // linear-segment boundary
     assert.ok(approx(srgbToLinear(0.5), 0.21404114));
-    assert.ok(approx(srgbToLinear(0.5082908), kDemoSkyLinear[0]));
+    assert.ok(approx(srgbToLinear(0.78431373), kTriEquatorLinear[0]));
 });
 
 test('LDR ambient swatches decode sRGB->linear per channel', () => {
     const cases = [
-        [kDemoSky, kDemoSkyLinear],
-        [kDemoEquator, kDemoEquatorLinear],
-        [kDemoGround, kDemoGroundLinear],
+        [kTriSky, kTriSkyLinear],
+        [kTriEquator, kTriEquatorLinear],
+        [kTriGround, kTriGroundLinear],
     ];
     for (const [input, expected] of cases) {
         const got = linearizeAmbientColor(input);
@@ -64,12 +70,12 @@ test('HDR ambient values (any channel > 1) pass through unchanged', () => {
     assert.deepEqual(linearizeAmbientColor(hdr), hdr);
 });
 
-test('trilight emission carries the LINEAR values for the Demo.unity night ambient', () => {
+test('trilight emission carries the LINEAR values for a night ambient', () => {
     const rs = {
         ambientMode: 1,
-        ambientSky: kDemoSky,
-        ambientEquator: kDemoEquator,
-        ambientGround: kDemoGround,
+        ambientSky: kTriSky,
+        ambientEquator: kTriEquator,
+        ambientGround: kTriGround,
         isNight: true,
     };
     const lines = emitAmbientLightLines(rs, false);
@@ -85,9 +91,9 @@ test('trilight emission carries the LINEAR values for the Demo.unity night ambie
         return [+m[1], +m[2], +m[3]];
     };
     const expect = {
-        SkyColor: kDemoSkyLinear,
-        EquatorColor: kDemoEquatorLinear,
-        GroundColor: kDemoGroundLinear,
+        SkyColor: kTriSkyLinear,
+        EquatorColor: kTriEquatorLinear,
+        GroundColor: kTriGroundLinear,
     };
     for (const [key, want] of Object.entries(expect)) {
         const got = grab(key);

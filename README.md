@@ -137,8 +137,8 @@ parent-offset composition both match Unity exactly. Every run prints a
 `transform-convention: conj-v2 (R(conj(q)) engine)` banner to stderr so any
 regeneration log proves which converter ran.
 
-The guard tests cover: object rotations (conjugation to 6 dp), the recorded
-directional-light ground truths, parented composition round-trips (with a
+The guard tests cover: object rotations (conjugation to 6 dp), hand-derived
+directional-light emit goldens, parented composition round-trips (with a
 negative control for the raw/non-conjugated bug class), negative-scale
 (mirror) preservation, and an end-to-end CLI run over a synthetic fixture.
 
@@ -375,10 +375,9 @@ npm test    # golden guard tests (transform convention, ambient colour space,
 ```
 
 Tests build synthetic Unity fixtures at runtime — the repository contains no
-Unity Editor content and no licensed asset-pack content, and contributions
-must keep it that way. (Numeric ground truths — a handful of quaternion and
-colour-swatch float values recorded from a reference conversion — are settings
-values, not assets.)
+Unity Editor content, no licensed asset-pack content, and no values recorded
+from licensed scenes (all numeric goldens are synthesized and hand-derived);
+contributions must keep it that way.
 
 **Phase 2 (planned):** the GameEngine repo currently carries its own copy of
 this converter (`Tools/ai/unity-scene-convert/`); a follow-up switches the

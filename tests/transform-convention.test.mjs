@@ -92,36 +92,47 @@ test('version constant is present and well-formed', () => {
 
 // -------------------------------------------------- (a) object rotation ------
 test('object rotation: emitted quat == conj(unity local) to 6dp', () => {
-    // A known, normalized Unity local quaternion (45deg about a tilted axis).
-    const qUnity = [0.1830127, 0.3535534, 0.1830127, 0.8965755];
+    // Synthesized compound rotation: yaw 45° then local pitch 30° —
+    // qY(45°) ⊗ qX(30°), Hamilton, hand-derived independently of convert.js.
+    // Unit-norm with all components distinct, so swizzles cannot self-cancel.
+    const qUnity = [0.2391176, 0.3696438, -0.0990458, 0.8923991];
     const emitted = emitObjectQuat(qUnity);
-    assertVec(emitted, [-0.1830127, -0.3535534, -0.1830127, 0.8965755],
+    assertVec(emitted, [-0.2391176, -0.3696438, 0.0990458, 0.8923991],
         'emitObjectQuat != conj(qUnity)');
     // And the engine's FromTRS(emitted) must reproduce the original Unity
     // rotation basis (round-trip): rotMat3(conj(emitted)) == rotMat3(qUnity).
     assertVec(rotMat3(conj(emitted)), rotMat3(qUnity), 'engine basis != Unity basis');
 });
 
-// The two directional ground truths recorded from the ElvenRealm conversion.
+// Two synthesized directional goldens (no scene-recorded values):
+//  - "sun": yaw 135° then local pitch 60° — qY(135°) ⊗ qX(60°), Hamilton —
+//    all four components nonzero with distinct magnitudes, so a component
+//    swizzle, a dropped conj, or a dropped Y-flip each produce a distinct
+//    6dp mismatch;
+//  - "fill": pitch 50° about X (Unity's default directional pitch), whose
+//    Y-flipped emit is a pure 180°-class quat (w == 0) — a shape a
+//    sign-convention bug cannot reproduce by accident.
 // Root directionals -> composed world rot == local; emitted = conj(worldRot * kYFlip).
-test('directional ground truths (sun + fill) match the record to 6dp', () => {
-    const sunSrc = [0.061370693, 0.96439517, -0.20186353, -0.15945758];
-    const fillSrc = [-0.19457838, 0.3549998, -0.07791842, -0.91106707];
+// Expected values hand-derived independently of convert.js (own Hamilton
+// product + conj over the exact input literals), then hardcoded.
+test('directional emit goldens (sun + fill) match hand-derived values to 6dp', () => {
+    const sunSrc = [0.1913417, 0.8001031, -0.4619398, 0.3314136]; // qY(135°)⊗qX(60°)
+    const fillSrc = [0.4226183, 0, 0, 0.9063078];                 // qX(50°)
     // Feed through the exact emitted path: worldTRS of a root == its local rot.
     const sunWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: sunSrc, scale: [1, 1, 1] }]);
     const fillWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: fillSrc, scale: [1, 1, 1] }]);
     assertVec(emitDirectionalQuat(sunWorld.rot),
-        [-0.2018635, 0.1594576, -0.0613707, -0.9643952], 'sun directional emit');
+        [-0.4619398, -0.3314136, -0.1913417, -0.8001031], 'sun directional emit');
     assertVec(emitDirectionalQuat(fillWorld.rot),
-        [-0.0779184, 0.9110671, 0.1945784, -0.3549998], 'fill directional emit');
+        [0, -0.9063078, -0.4226183, 0], 'fill directional emit');
 });
 
 // -------------------------------------------- (b) parented composition -------
 test('parented position: conj emission reproduces Unity world offset', () => {
-    // Parent yawed in Y (echoes the observatory-telescope chain, ~-11.1deg),
-    // child offset in the XZ plane so the conj-vs-non-conj residual stays y==0
-    // exactly like the recorded telescope signature (-11.459, 0, -2.403).
-    const parentRot = yawY(-11.1);
+    // Parent yawed in Y, child offset in the XZ plane: a yaw about Y moves
+    // points only within the XZ plane, so the conj-vs-non-conj residual is
+    // confined to XZ (y == 0) — the exact signature this guard asserts below.
+    const parentRot = yawY(-12);
     const childLocal = [1.2, 0, 0.4];
 
     // Unity composes the child's world offset as R(parentRot) * childLocal.
@@ -136,7 +147,7 @@ test('parented position: conj emission reproduces Unity world offset', () => {
     // Negative control: had the converter emitted the RAW (non-conjugated)
     // quat, the engine would rotate the offset the WRONG way -> a non-zero
     // residual confined to the XZ plane. This is the exact bug class the guard
-    // defends; assert the divergence exists and has the recorded shape (y==0).
+    // defends; assert the divergence exists and has the asserted shape (y==0).
     const wrongOffset = engineRotate(parentRot, childLocal); // stored = raw (bug)
     const residual = [
         unityOffset[0] - wrongOffset[0],
@@ -232,7 +243,9 @@ function buildFixture(dir) {
         '--- !u!4 &302',
         'Transform:',
         '  m_GameObject: {fileID: 300}',
-        '  m_LocalRotation: {x: 0.061370693, y: 0.96439517, z: -0.20186353, w: -0.15945758}',
+        // Synthesized: qY(135°)⊗qX(60°) — the same hand-derived golden as the
+        // unit test above, so the YAML-parse -> emit path is pinned end to end.
+        '  m_LocalRotation: {x: 0.1913417, y: 0.8001031, z: -0.4619398, w: 0.3314136}',
         '  m_LocalPosition: {x: 0, y: 10, z: 0}',
         '  m_LocalScale: {x: 1, y: 1, z: 1}',
         '  m_Father: {fileID: 0}',
@@ -303,12 +316,13 @@ test('end-to-end: CLI emits conj rotation, preserves negative scale, prints bann
         assertVec(parseTuple(child.props['Transform.position']), [2, 0, 0], 'child local position');
         assert.equal(child.parent, parent.id, 'child must parent to Parent entity');
 
-        // Directional light emitted at top level with the recorded ground truth.
+        // Directional light emitted at top level with the hand-derived golden
+        // (conj(qSun ⊗ kYFlip), same derivation as the unit test above).
         const sun = entities.find(e => e.props['Light.type'] === '0');
         assert.ok(sun, 'directional light entity not emitted');
         assert.equal(sun.parent, null, 'directional light must be unparented (sun anchor)');
         assertVec(parseTuple(sun.props['Transform.rotation']),
-            [-0.2018635, 0.1594576, -0.0613707, -0.9643952], 'sun directional emitted rotation');
+            [-0.4619398, -0.3314136, -0.1913417, -0.8001031], 'sun directional emitted rotation');
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -329,7 +343,8 @@ function buildDirectionalFixture(dir, sceneName, fillCount) {
     const lines = [
         '%YAML 1.1',
         '%TAG !u! tag:unity3d.com,2011:',
-        // Strong sun: shadow-casting, intensity 3.16 (the Demo_unity shape).
+        // Strong sun: shadow-casting, clearly strongest by luma x intensity
+        // (synthesized values; rotation = the qY(135°)⊗qX(60°) golden).
         '--- !u!1 &300',
         'GameObject:',
         '  m_Name: Sun',
@@ -337,7 +352,7 @@ function buildDirectionalFixture(dir, sceneName, fillCount) {
         '--- !u!4 &302',
         'Transform:',
         '  m_GameObject: {fileID: 300}',
-        '  m_LocalRotation: {x: 0.061370693, y: 0.96439517, z: -0.20186353, w: -0.15945758}',
+        '  m_LocalRotation: {x: 0.1913417, y: 0.8001031, z: -0.4619398, w: 0.3314136}',
         '  m_LocalPosition: {x: 0, y: 10, z: 0}',
         '  m_LocalScale: {x: 1, y: 1, z: 1}',
         '  m_Father: {fileID: 0}',
@@ -346,14 +361,14 @@ function buildDirectionalFixture(dir, sceneName, fillCount) {
         '  m_GameObject: {fileID: 300}',
         '  m_Enabled: 1',
         '  m_Type: 1',
-        '  m_Color: {r: 0.48, g: 0.58, b: 1, a: 1}',
-        '  m_Intensity: 3.16',
+        '  m_Color: {r: 1, g: 0.95, b: 0.9, a: 1}',
+        '  m_Intensity: 3',
         '  m_Range: 10',
         '  m_Shadows:',
         '    m_Type: 2',
     ];
-    // Weak fills: enabled, no shadows, intensity 0.96 — the shipped-scene
-    // shape that used to steal the shading UBO pre-fix.
+    // Weak fills: enabled, no shadows, far weaker than the sun — the
+    // multi-directional shape that used to get demoted pre-fix.
     for (let i = 0; i < fillCount; ++i) {
         const go = 400 + i * 10;
         lines.push(
@@ -364,7 +379,7 @@ function buildDirectionalFixture(dir, sceneName, fillCount) {
             `--- !u!4 &${go + 2}`,
             'Transform:',
             `  m_GameObject: {fileID: ${go}}`,
-            '  m_LocalRotation: {x: 0, y: 0.9110671, z: 0.1945784, w: -0.3549998}',
+            '  m_LocalRotation: {x: 0.4226183, y: 0, z: 0, w: 0.9063078}', // qX(50°), synthesized
             '  m_LocalPosition: {x: 0, y: 8, z: 0}',
             '  m_LocalScale: {x: 1, y: 1, z: 1}',
             '  m_Father: {fileID: 0}',
@@ -373,8 +388,8 @@ function buildDirectionalFixture(dir, sceneName, fillCount) {
             `  m_GameObject: {fileID: ${go}}`,
             '  m_Enabled: 1',
             '  m_Type: 1',
-            '  m_Color: {r: 0.35, g: 0.81, b: 1, a: 1}',
-            '  m_Intensity: 0.96',
+            '  m_Color: {r: 0.4, g: 0.6, b: 1, a: 1}',
+            '  m_Intensity: 0.5',
             '  m_Range: 10',
             '  m_Shadows:',
             '    m_Type: 0');
