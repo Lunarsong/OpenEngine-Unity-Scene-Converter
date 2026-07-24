@@ -86,12 +86,14 @@ unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 - `--no-copy-textures` / `--png` / `--texc` — texture handling, see
   [Textures](#textures).
 
-The target project must already have the pack's FBX files imported; mesh
-references are resolved by **filename stem, case-insensitive** (Unity
+Mesh references resolve against the target project first — by **filename
+stem, case-insensitive** (Unity
 `SM_Env_Tree_03.fbx` → any assetdb `Model` entry whose file stem is
-`sm_env_tree_03`). Ambiguous stems pick the shortest path and warn. Unresolved
-stems emit the entity with a `; UNRESOLVED ...` comment instead of a
-MeshRenderer.
+`sm_env_tree_03`). Ambiguous stems pick the shortest path and warn. Stems the
+project lacks are **seeded automatically**: the pack's FBX is extracted into
+`Models_Unity/` and referenced by path, resolving once the project registers
+it. A `; UNRESOLVED ...` comment (no MeshRenderer) remains only when the pack
+itself carries no source for the mesh.
 
 Example (a Synty demo pack):
 

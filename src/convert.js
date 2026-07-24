@@ -68,9 +68,14 @@ let jsonTotal = 0;
 function progressStep(phase, detail) {
     if (jsonMode) console.log(JSON.stringify({ phase, step: ++jsonStep, total: jsonTotal, detail }));
 }
-let itemCounter = 0;
+// Unbounded item streams (textures staged, models seeded) count per phase so
+// the editor UI can show independent tallies.
+const itemCounters = new Map();
 function progressItem(phase, detail) {
-    if (jsonMode) console.log(JSON.stringify({ phase, step: ++itemCounter, total: null, detail }));
+    if (!jsonMode) return;
+    const step = (itemCounters.get(phase) || 0) + 1;
+    itemCounters.set(phase, step);
+    console.log(JSON.stringify({ phase, step, total: null, detail }));
 }
 // Info lines that belong on stdout for humans but must not corrupt the --json
 // stream: route to stderr in json mode.
@@ -1521,8 +1526,8 @@ function emitScene(ctx, st, sceneName) {
     const emitted = {
         entities: 0, meshEntities: 0, groupEntities: 0, lights: 0, suppressedAdditionalLightShadows: 0,
         localShadowTiers: [0, 0, 0, 0], // shadowed locals emitted, indexed by engine tier (1=Low 2=Medium 3=High)
-        resolvedMeshes: 0, unresolvedMeshes: 0, materialParts: 0, materialsBound: 0, hiddenSkyFx: 0,
-        uniqueFbx: new Set(), unresolvedFbxStems: new Set(),
+        resolvedMeshes: 0, unresolvedMeshes: 0, seededMeshes: 0, materialParts: 0, materialsBound: 0, hiddenSkyFx: 0,
+        uniqueFbx: new Set(), unresolvedFbxStems: new Set(), seededFbxStems: new Set(),
         sunEntityId: null, environment: false,
         directionalsBeyondEngineCap: 0,
     };
@@ -1660,7 +1665,12 @@ function emitScene(ctx, st, sceneName) {
                     out.push(`MeshRenderer.meshName = "${mn}"`);
                 }
                 emitMeshCommon(n, emitMaterialRef(n, 0));
-                emitted.resolvedMeshes++;
+                if (ref.seeded) {
+                    emitted.seededMeshes++;
+                    emitted.seededFbxStems.add(fbxStem(ctx, n.meshFbxGuid));
+                } else {
+                    emitted.resolvedMeshes++;
+                }
                 wasMesh = true;
             } else {
                 const stem = fbxStem(ctx, n.meshFbxGuid);
@@ -2243,8 +2253,39 @@ function resolveMeshAsset(ctx, unityFbxGuid) {
             ref = { guid: best.guid, path: relativizeToProject(ctx, best.path) };
         }
     }
+    if (!ref) ref = seedPackModel(ctx, unityFbxGuid);
     meshRefCache.set(unityFbxGuid, ref);
     return ref;
+}
+
+// Assetdb miss -> seed the mesh from the pack itself: extract the FBX bytes
+// (already on disk under <guid>/asset) into Models_Unity/<pack-relative> in
+// the staged output and reference it by PATH with an empty guid — SceneIO's
+// cross-project recovery binds path-form refs once the file is registered
+// after the editor's move pass, so there is no "import your models first"
+// pre-step. Already-imported project models always win (the assetdb branch
+// above), so re-imports never duplicate content. Returns null when the guid
+// is not a pack FBX or the copy failed (the caller then reports UNRESOLVED).
+function seedPackModel(ctx, unityFbxGuid) {
+    if (!ctx.modelSeedDir) return null;
+    const e = ctx.pkg.get(unityFbxGuid);
+    if (!e || path.extname(e.assetPath).toLowerCase() !== '.fbx') return null;
+    const packRel = e.assetPath.replace(/\\/g, '/').replace(/^assets\//i, '');
+    if (packRel.split('/').some((seg) => seg === '' || seg === '..')) return null;
+    const rel = `${kModelSeedRel}/${packRel}`;
+    const dest = path.join(ctx.modelSeedDir, packRel);
+    try {
+        if (!fs.existsSync(dest)) {
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.copyFileSync(path.join(e.dir, 'asset'), dest);
+        }
+    } catch (err) {
+        warn(`failed to seed pack model ${e.assetPath}: ${err.message}`, ctx.verbose);
+        return null;
+    }
+    recordOutput(ctx, dest, 'model');
+    progressItem('models', rel);
+    return { guid: '', path: rel, seeded: true };
 }
 
 function relativizeToProject(ctx, p) {
@@ -2267,6 +2308,7 @@ function relativizeToProject(ctx, p) {
 
 const kMatOutRel = 'Materials_Unity';
 const kTexCopyRel = 'Textures_Unity';
+const kModelSeedRel = 'Models_Unity';
 const kEmissionPaperwhiteNits = 203; // engine: 203 nits == scene-linear 1.0
 
 // Deterministic GUID (8-4-4-4-12) from a seed string. The scene material ref
@@ -2344,7 +2386,10 @@ function encodeKtx2(ctx, sourceAbs, dest, kind) {
 
 const texRefCache = new Map();
 function resolveTexture(ctx, unityTexGuid, texKind) {
-    if (!unityTexGuid || !ctx.assetDb) return null;
+    // No assetdb is NOT a bail-out: the copy-fallback below still stages the
+    // pack's own image so a fresh project imports everything (mirrors mesh
+    // seeding). Only the already-imported-project lookup needs the db.
+    if (!unityTexGuid) return null;
     const kind = texKind || 'color';
     const cacheKey = ctx.texc ? `${unityTexGuid}|${kind}` : unityTexGuid;
     if (texRefCache.has(cacheKey)) return texRefCache.get(cacheKey);
@@ -2352,8 +2397,8 @@ function resolveTexture(ctx, unityTexGuid, texKind) {
     const e = ctx.pkg.get(unityTexGuid.toLowerCase());
     if (e) {
         const stem = path.basename(e.assetPath, path.extname(e.assetPath)).toLowerCase();
-        let candidates = ctx.assetDb.texByStem.get(stem) || [];
-        if (candidates.length === 0)
+        let candidates = (ctx.assetDb && ctx.assetDb.texByStem.get(stem)) || [];
+        if (candidates.length === 0 && ctx.assetDb)
             candidates = ctx.assetDb.texByNormStem.get(stem.replace(/[^a-z0-9]/g, '')) || [];
 
         let best = null;
@@ -3219,7 +3264,7 @@ function main(argv = process.argv) {
     console.error(`transform-convention: ${TRANSFORM_CONVENTION_VERSION}`);
     const args = parseArgs(argv);
     jsonMode = !!args.json;
-    jsonStep = 0; jsonTotal = 0; itemCounter = 0;
+    jsonStep = 0; jsonTotal = 0; itemCounters.clear();
     if (args['list-scenes']) { listScenesMain(args['list-scenes']); return; }
     if (!args.pkg || args.scenes.length === 0) {
         console.error('Usage: node convert.js --pkg <extracted-pkg-dir|.unitypackage> --scene <scene path suffix|guid> [--scene <...>] --project <target-project-dir> [--assetdb <file>] [--unity-project <unity-project-dir>] [--out <output.scene>] [--local-shadows off|faithful] [--json] [--verbose]\n'
@@ -3258,6 +3303,7 @@ function main(argv = process.argv) {
         volumeOverrides: null,
         matOutDir: null,
         texCopyDir: null,
+        modelSeedDir: null,
         texc: null,
         matStats: { generated: 0, skippedPlain: 0, unresolvedMat: 0, texResolved: 0, texCopied: 0, texEncoded: 0, texUnresolved: 0,
             fallbackUnmappable: 0, fallbackList: [], byFamily: new Map() },
@@ -3292,6 +3338,9 @@ function main(argv = process.argv) {
             ctx.texCopyDir = path.join(ctx.projectDir, 'assets', kTexCopyRel);
             fs.mkdirSync(ctx.texCopyDir, { recursive: true });
         }
+        // Mesh-seeding stage root (Models_Unity). Created lazily by
+        // seedPackModel so runs that resolve everything leave no empty dir.
+        ctx.modelSeedDir = path.join(ctx.projectDir, 'assets', kModelSeedRel);
         // Textures ship as UASTC KTX2 (block-compressed on the GPU, pre-mipped)
         // by default; --png restores the raw-image reference/copy behavior.
         if (!args.png && ctx.texCopyDir) {
@@ -3311,7 +3360,7 @@ function main(argv = process.argv) {
         for (const v of ctx.assetDb.byStem.values()) models += v.length;
         console.error(`AssetDb: ${dbFile} (${ctx.assetDb.byGuid.size} assets, ${models} model files)`);
     } else {
-        console.error('AssetDb: NONE — all mesh refs will be unresolved');
+        console.error('AssetDb: NONE — mesh refs seed from the pack (Models_Unity/) where possible');
     }
 
     // Fail fast: resolve every requested scene before converting any.
@@ -3332,6 +3381,7 @@ function main(argv = process.argv) {
                 texResolved: m.texResolved, texEncoded: m.texEncoded, texCopied: m.texCopied,
                 texUnresolved: m.texUnresolved, unmappable: m.fallbackUnmappable,
             },
+            models: { seeded: ctx.outputs.filter((o) => o.kind === 'model').length },
             outputs: ctx.outputs,
         }));
     }
@@ -3404,6 +3454,7 @@ function convertOneScene(ctx, args, sceneGuid, multiScene) {
         materialsBound: emitted.materialsBound,
         resolvedMeshes: emitted.resolvedMeshes,
         unresolvedMeshes: emitted.unresolvedMeshes,
+        seededMeshes: emitted.seededMeshes,
         lights: emitted.lights,
         warnings: warnings.length,
         dropped,
@@ -3446,6 +3497,7 @@ function printHumanReport(ctx, st, emitted, outFile, sceneNameTag) {
             + (emitted.skybox.reused ? ' (bake reused)' : ''));
     }
     console.log(`mesh refs resolved:        ${emitted.resolvedMeshes}`);
+    console.log(`mesh refs seeded from pack:${emitted.seededMeshes} (${emitted.seededFbxStems.size} unique fbx extracted to ${kModelSeedRel}/)`);
     console.log(`mesh refs UNRESOLVED:      ${emitted.unresolvedMeshes} (${emitted.unresolvedFbxStems.size} unique fbx)`);
     console.log(`unique static fbx used:    ${emitted.uniqueFbx.size}`);
     console.log(`skipped skinned meshes:    ${s.skippedSkinned}`);
