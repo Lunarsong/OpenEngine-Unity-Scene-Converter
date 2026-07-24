@@ -559,6 +559,39 @@ function smhToBands(smh) {
     };
 }
 
+// EncodeGradeLog mirror (ColorGradeParamsUBO.h / hdr_color_fx.frag): ACEScct-shaped
+// linear toe + log2 body mapping exposed-linear -> the engine's encoded grade axis.
+function encodeGradeLog(x) {
+    return x <= 0.0078125 ? x * 10.5402 + 0.0729
+                          : (Math.log2(Math.max(x, 1e-10)) + 9.72) / kGradeEncSlope;
+}
+
+// Unity SMH band limits -> native ColorGradeEffect band limits.
+//
+// Domain honesty: URP's shadowsStart/End + highlightsStart/End are smoothstep
+// edges over LINEAR luminance of the graded color (LutBuilderHdr.shader:
+// "luma = Luminance(colorLinear)" feeding the _ShaMidHiLimits smoothstep pair);
+// URP defaults shadows 0->0.3, highlights 0.55->1. The native corrector's limits
+// are smoothstep edges over ENCODED-LOG luminance (hdr_color_fx.frag
+// GradeLogSpace), both anchored at exposed mid-grey 0.18. EncodeGradeLog is
+// monotonic, so mapping each edge through it lands the band boundaries (the 0/1
+// weight points) at the same linear luminance in both engines. Two residuals,
+// accepted: the in-between smoothstep ramp is traversed in log rather than
+// linear luminance (broader in linear terms), and the engine takes luma AFTER
+// encoding (luma-of-encode <= encode-of-luma for chromatic colors; exact for
+// greys). Emitted whenever SMH is live — Unity's DEFAULT limits land at
+// non-default native values (e.g. highlightsStart 0.55 linear -> ~0.51 encoded
+// vs the native default 0.45), which is exactly the URP band placement.
+function smhLimitsToNative(smh) {
+    const enc = v => Math.min(Math.max(encodeGradeLog(Math.max(v, 0)), 0), 1);
+    return {
+        shadowsStart: enc(smh.shadowsStart ?? 0),
+        shadowsEnd: enc(smh.shadowsEnd ?? 0.3),
+        highlightsStart: enc(smh.highlightsStart ?? 0.55),
+        highlightsEnd: enc(smh.highlightsEnd ?? 1),
+    };
+}
+
 // Unity LiftGammaGain -> three native bands via ASC CDL. Gain(slope)->Highlights is
 // an exact multiply. Lift(offset)->Shadows and Gamma(power)->Midtones are linearised
 // to their mid-grey-referenced effective multiplier (lift: 1 + lift/mid; gamma:
@@ -1923,6 +1956,16 @@ function emitScene(ctx, st, sceneName) {
             if (lggLive) bands = bands ? addBands(bands, lggToBands(lgg)) : lggToBands(lgg);
             if (bands && !bandsAreNeutral(bands)) {
                 cgLines.push(...emitColorGradeBandLines(bands));
+                if (smhLive) {
+                    // Carry URP's band partition too (see smhLimitsToNative for the
+                    // domain mapping). LGG-only volumes keep the native defaults —
+                    // URP LGG is unbanded, so there is no partition to transfer.
+                    const lim = smhLimitsToNative(smh);
+                    cgLines.push(`ColorGradeEffect.shadowsStart = ${fmtF(lim.shadowsStart)}`);
+                    cgLines.push(`ColorGradeEffect.shadowsEnd = ${fmtF(lim.shadowsEnd)}`);
+                    cgLines.push(`ColorGradeEffect.highlightsStart = ${fmtF(lim.highlightsStart)}`);
+                    cgLines.push(`ColorGradeEffect.highlightsEnd = ${fmtF(lim.highlightsEnd)}`);
+                }
                 warn(`volume grade: ${[smhLive && 'ShadowsMidtonesHighlights', lggLive && 'LiftGammaGain'].filter(Boolean).join(' + ')} -> native ColorGradeEffect three-way bands`, ctx.verbose);
             }
         }

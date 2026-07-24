@@ -113,11 +113,13 @@ function runConvert(tmp, profileDocs, extraArgs = []) {
 }
 
 // YAML doc-body helpers.
-const smhDoc = (shadows, midtones, highlights) => [
+const smhDoc = (shadows, midtones, highlights, limits = {}) => [
     '  m_Name: ShadowsMidtonesHighlights', '  active: 1',
     '  shadows:', '    m_OverrideState: 1', `    m_Value: {x: ${shadows[0]}, y: ${shadows[1]}, z: ${shadows[2]}, w: ${shadows[3]}}`,
     '  midtones:', '    m_OverrideState: 1', `    m_Value: {x: ${midtones[0]}, y: ${midtones[1]}, z: ${midtones[2]}, w: ${midtones[3]}}`,
     '  highlights:', '    m_OverrideState: 1', `    m_Value: {x: ${highlights[0]}, y: ${highlights[1]}, z: ${highlights[2]}, w: ${highlights[3]}}`,
+    ...Object.entries(limits).flatMap(([k, v]) =>
+        [`  ${k}:`, '    m_OverrideState: 1', `    m_Value: ${v}`]),
 ];
 const lggDoc = (lift, gamma, gain) => [
     '  m_Name: LiftGammaGain', '  active: 1',
@@ -152,11 +154,53 @@ test('ShadowsMidtonesHighlights -> native three-way bands (URP prep numbers), no
         assert.ok(grade(scene, 'shadowsColorB') > 0.1, 'shadows blue chroma positive');
         assert.ok(grade(scene, 'shadowsColorR') < 0, 'shadows red chroma negative');
         assert.ok(grade(scene, 'shadowsLightness') < 0, 'blue-tint shadow darkens');
-        // Highlights wheel was neutral -> no highlights lines emitted.
-        assert.doesNotMatch(scene, /ColorGradeEffect\.highlights/);
+        // Highlights wheel was neutral -> no highlights offset lines emitted
+        // (highlightsStart/End band limits still carry the URP partition).
+        assert.doesNotMatch(scene, /ColorGradeEffect\.highlights(Color[RGB]|Lightness)/);
         // NOT the legacy LUT path, and NONE of the removed single-range keys.
         assert.doesNotMatch(scene, /CubeLutEffect\./);
         assert.doesNotMatch(scene, /ColorGradeEffect\.(brightness|gamma|hue)\b/);
+    });
+});
+
+// Band limits: URP smoothstep edges over LINEAR luminance map through
+// EncodeGradeLog onto the engine's encoded-log axis (see smhLimitsToNative).
+const encodeGradeLog = (x) => x <= 0.0078125 ? x * 10.5402 + 0.0729
+                                             : (Math.log2(Math.max(x, 1e-10)) + 9.72) / 17.52;
+const near = (actual, expected, msg) => {
+    assert.ok(typeof actual === 'number' && Math.abs(actual - expected) < 1e-6,
+        `${msg}: ${actual} != ~${expected}`);
+};
+
+test('SMH band limits carry through EncodeGradeLog; URP defaults emitted when unoverridden', () => {
+    withTmp((tmp) => {
+        // Live SMH (blue shadows) with NO limit overrides -> URP's default
+        // partition (shadows 0->0.3, highlights 0.55->1 linear) must be emitted
+        // in the encoded domain, NOT dropped to the native defaults (0/0.45/
+        // 0.45/0.95) — that is where URP's band placement actually lives.
+        const { scene } = runConvert(tmp, [smhDoc([0.5, 0.6, 1.0, 0], [1, 1, 1, 0], [1, 1, 1, 0])]);
+        near(grade(scene, 'shadowsStart'), encodeGradeLog(0), 'shadowsStart');
+        near(grade(scene, 'shadowsEnd'), encodeGradeLog(0.3), 'shadowsEnd');
+        near(grade(scene, 'highlightsStart'), encodeGradeLog(0.55), 'highlightsStart');
+        near(grade(scene, 'highlightsEnd'), encodeGradeLog(1), 'highlightsEnd');
+    });
+});
+
+test('SMH explicit band limits map through EncodeGradeLog (clamped to [0,1] encoded)', () => {
+    withTmp((tmp) => {
+        const { scene } = runConvert(tmp, [smhDoc([0.5, 0.6, 1.0, 0], [1, 1, 1, 0], [1, 1, 1, 0],
+            { shadowsStart: 0.05, shadowsEnd: 0.4, highlightsStart: 0.6, highlightsEnd: 2 })]);
+        near(grade(scene, 'shadowsStart'), encodeGradeLog(0.05), 'shadowsStart');
+        near(grade(scene, 'shadowsEnd'), encodeGradeLog(0.4), 'shadowsEnd');
+        near(grade(scene, 'highlightsStart'), encodeGradeLog(0.6), 'highlightsStart');
+        near(grade(scene, 'highlightsEnd'), encodeGradeLog(2), 'highlightsEnd');
+    });
+});
+
+test('LGG-only volumes emit no band limits (URP LGG is unbanded -> native defaults)', () => {
+    withTmp((tmp) => {
+        const { scene } = runConvert(tmp, [lggDoc([1, 0.9, 0.85, 0.02], [1, 1, 1, 0], [1, 1, 1, 0])]);
+        assert.doesNotMatch(scene, /ColorGradeEffect\.(shadowsStart|shadowsEnd|highlightsStart|highlightsEnd)/);
     });
 });
 
