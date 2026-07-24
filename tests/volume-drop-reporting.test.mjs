@@ -28,7 +28,7 @@ function put(dir, guid, pathname, content) {
 
 // A minimal day scene with a directional sun (so the post-FX volume block runs)
 // and a global Volume whose profile carries: a translated component
-// (ColorAdjustments), a translated-with-a-dropped-subfield (colorFilter), a
+// (ColorAdjustments, including its colorFilter -> ColorFilterEffect), a
 // now-mappable component (ChromaticAberration) and a genuinely unmapped grade
 // (SplitToning).
 function buildVolumeFixture(dir) {
@@ -168,14 +168,14 @@ test('unmapped grade (SplitToning) is reported in the dropped-settings summary',
     }
 });
 
-test('a partially-translated component reports its dropped sub-setting (ColorAdjustments.colorFilter)', () => {
+test('ColorAdjustments.colorFilter now translates to ColorFilterEffect (no longer dropped)', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dropguard-'));
     try {
         const { res, scene } = runConvert(tmp);
-        assert.match(res.stdout, /ColorAdjustments\.colorFilter/);
-        // colorFilter placement is a judgment call (plan) — do NOT emit ColorFilterEffect.
-        assert.doesNotMatch(scene, /ColorFilterEffect\./);
-        // ...but the translated part of ColorAdjustments still carries over.
+        assert.doesNotMatch(res.stdout, /ColorAdjustments\.colorFilter/);
+        assert.match(scene, /ColorFilterEffect\.enabled = true/);
+        assert.match(scene, /ColorFilterEffect\.colorR = /);
+        // ...and the rest of ColorAdjustments still carries over.
         assert.match(scene, /ColorGradeEffect\.saturation/);
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });

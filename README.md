@@ -297,12 +297,20 @@ three-way corrector graded in ACEScct-shaped log space
   when both are authored.
 - **ColorAdjustments** — saturation carries 1:1; contrast carries the FULL
   URP percentage (`1 + pct/100`) since both grade in log around ACEScc
-  mid-grey. Hue shift is honestly *dropped* (no engine hue channel yet).
+  mid-grey; hue shift carries 1:1 in degrees (an HSV rotation at the tail of
+  the chain in both). `colorFilter` becomes a `ColorFilterEffect` multiply on
+  pre-tonemap HDR colour — URP applies `.value.linear`, so the picker channels
+  carry through sRGB→linear, and the component's multiply/intensity-1 defaults
+  reproduce URP's plain multiply.
+- **WhiteBalance** — `temperature`/`tint` carry verbatim in URP's `-100..100`
+  range; the engine mirrors `ColorUtils.ColorBalanceToLMSCoeffs` (CAT02 LMS
+  von Kries gains) and applies them at the head of the grade chain, in linear,
+  exactly as URP does.
 - **ChromaticAberration** — Unity's normalized `[0,1]` intensity maps onto
   the engine's absolute pixel range (`[0,12]` px, linear).
 
 Anything else the user authored in a volume (SplitToning, ChannelMixer,
-ColorCurves, Bloom tint, ColorAdjustments colorFilter, …) is recorded and
+ColorCurves, Bloom tint, …) is recorded and
 printed unconditionally in a **"recognized settings dropped"** summary at the
 end of every conversion — silently dropping authored intent is the
 converter's worst failure mode. Guarded by `tests/color-grade-mapping.test.mjs`

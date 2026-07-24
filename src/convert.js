@@ -1985,6 +1985,22 @@ function emitScene(ctx, st, sceneName) {
                 cgLines.push(`ColorGradeEffect.contrast = ${fmtF(1 + colAdj.contrast / 100)}`);
             if (typeof colAdj.saturation === 'number' && colAdj.saturation !== 0)
                 cgLines.push(`ColorGradeEffect.saturation = ${fmtF(1 + colAdj.saturation / 100)}`);
+            // Hue Shift carries 1:1 in degrees: both ends are an HSV rotation at
+            // the tail of the grade chain (engine: after the corrector; URP: after
+            // its trackball/LGG block).
+            if (typeof colAdj.hueShift === 'number' && colAdj.hueShift !== 0)
+                cgLines.push(`ColorGradeEffect.hueShift = ${fmtF(colAdj.hueShift)}`);
+        }
+
+        // URP WhiteBalance -> the grade block's temperature/tint, same -100..100
+        // ranges: the engine mirrors ColorBalanceToLMSCoeffs and applies the LMS
+        // gains at the head of the grade chain, so the adaptation matches URP.
+        const wb = (vol.WhiteBalance && vol.WhiteBalance.active) ? vol.WhiteBalance : null;
+        if (wb) {
+            if (typeof wb.temperature === 'number' && wb.temperature !== 0)
+                cgLines.push(`ColorGradeEffect.temperature = ${fmtF(wb.temperature)}`);
+            if (typeof wb.tint === 'number' && wb.tint !== 0)
+                cgLines.push(`ColorGradeEffect.tint = ${fmtF(wb.tint)}`);
         }
 
         if (cgLines.length) {
@@ -1994,12 +2010,21 @@ function emitScene(ctx, st, sceneName) {
             out.push(...cgLines);
         }
 
-        // ColorAdjustments Hue Shift no longer maps: the unified ColorGradeEffect
-        // dropped the single-range Hue field (the new schema consume-DROPS a stray
-        // `hue` key), and hue rotation is a later grade slice. Report it honestly
-        // rather than emit a key the schema silently swallows.
-        if (colAdj && typeof colAdj.hueShift === 'number' && colAdj.hueShift !== 0)
-            noteDropped('volume grade', 'ColorAdjustments.hueShift (unified ColorGradeEffect has no hue channel yet — deferred to a later grade slice)', ctx.verbose);
+        // ColorAdjustments.colorFilter -> ColorFilterEffect. Both are an unclipped
+        // multiplier on pre-tonemap HDR color in the grade chain (the engine
+        // filter runs inside hdr_color_fx's post-exposure block, URP's filter
+        // slot). Unity stores the picker color; URP applies .value.linear, so the
+        // channels carry through srgbToLinear. Multiply/intensity-1 defaults of
+        // ColorFilterEffect match URP's plain multiply — only enabled + color emit.
+        // (rgb-only identity check: colorFilter is a COLOR, so its alpha is not a
+        // wheel w-offset — isIdentityWheel would treat opaque white as authored.)
+        const cf = (colAdj && Array.isArray(colAdj.colorFilter)) ? colAdj.colorFilter : null;
+        if (cf && [0, 1, 2].some(i => Math.abs(cf[i] - 1) >= 1e-4)) {
+            out.push(`ColorFilterEffect.enabled = true`);
+            out.push(`ColorFilterEffect.colorR = ${fmtF(srgbToLinear(cf[0]))}`);
+            out.push(`ColorFilterEffect.colorG = ${fmtF(srgbToLinear(cf[1]))}`);
+            out.push(`ColorFilterEffect.colorB = ${fmtF(srgbToLinear(cf[2]))}`);
+        }
         // URP SSAO renderer feature (--unity-project) -> engine GTAO.
         // URP: ao = pow(saturate(occ * Intensity * falloff * rcpSamples), 0.6)
         // — Intensity scales the occlusion amount ~linearly below saturation.
@@ -2066,7 +2091,8 @@ function emitScene(ctx, st, sceneName) {
         // silently swallowed the way the old fixed list swallowed everything but
         // three names.
         const kTranslatedVolumeComponents = new Set([
-            'ColorAdjustments',            // postExposure/contrast/saturation (hueShift reported below)
+            'ColorAdjustments',            // postExposure/contrast/saturation/hueShift/colorFilter
+            'WhiteBalance',                // -> ColorGradeEffect temperature/tint (LMS parity)
             'Bloom', 'Vignette', 'ChromaticAberration',
             'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands (or --grade-lut .cube fallback)
             'LiftGammaGain',               // -> native ColorGradeEffect bands via ASC CDL
@@ -2081,13 +2107,7 @@ function emitScene(ctx, st, sceneName) {
             if (componentHasEffect(comp))
                 noteDropped('volume grade', `${name} (authored override, no engine mapping yet)`, ctx.verbose);
         }
-        // Sub-settings of components we translate only partially. ColorAdjustments'
-        // Color Filter is an HDR pre-tonemap tint multiply; the engine has a
-        // ColorFilterEffect but it sits in the LDR (post-tonemap) stack, so the
-        // faithful placement is a judgment call spec'd in the plan — report it as
-        // dropped rather than emit a mis-placed tint.
-        if (colAdj && Array.isArray(colAdj.colorFilter) && !isIdentityWheel(colAdj.colorFilter))
-            noteDropped('volume grade', 'ColorAdjustments.colorFilter (HDR tint; ColorFilterEffect is LDR-stack — placement TBD)', ctx.verbose);
+        // Sub-settings of components we translate only partially.
         if (bloom && Array.isArray(bloom.tint) && !isIdentityWheel(bloom.tint))
             noteDropped('volume grade', 'Bloom.tint (colored bloom; BloomEffect has no tint channel yet)', ctx.verbose);
         // Distance fog (slice 5b). Unity's linear distance fog -> the engine's

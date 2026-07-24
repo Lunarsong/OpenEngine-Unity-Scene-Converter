@@ -12,7 +12,8 @@
 //     Gain->Highlights), replicating PrepareLiftGammaGain;
 //   - ColorAdjustments contrast recalibrated to the log-space /100 (was /200) and
 //     saturation carried 1:1; gradeInLog = true;
-//   - no old keys emitted; HueShift now honestly reported as dropped;
+//   - no old keys emitted; hueShift carries in degrees, WhiteBalance -> native
+//     temperature/tint, colorFilter -> ColorFilterEffect (sRGB->linear);
 //   - the --grade-lut opt-in still bakes the legacy CubeLutEffect.
 // All fixtures are synthetic — no licensed content.
 
@@ -237,16 +238,67 @@ test('ColorAdjustments contrast recalibrated to log-space /100 (was /200); satur
     });
 });
 
-test('ColorAdjustments Hue Shift is no longer emitted (new schema has no hue) and is reported as dropped', () => {
+test('ColorAdjustments Hue Shift maps 1:1 to ColorGradeEffect.hueShift (degrees)', () => {
     withTmp((tmp) => {
         const { res, scene } = runConvert(tmp, [colAdjDoc({ hueShift: 25, saturation: 5 })]);
-        // Old code emitted ColorGradeEffect.hue -> the new schema consume-drops it.
+        assert.equal(grade(scene, 'hueShift'), 25);
+        // The legacy single-range key must never come back (consume-dropped by the schema).
         assert.doesNotMatch(scene, /ColorGradeEffect\.hue\b/);
-        // Honestly reported instead of silently swallowed.
-        assert.match(res.stdout, /recognized settings dropped/);
-        assert.match(res.stdout, /hueShift/);
-        // The mappable part of ColorAdjustments still carries.
+        // No longer in the dropped-settings report.
+        assert.doesNotMatch(res.stdout, /hueShift/);
         assert.match(scene, /ColorGradeEffect\.saturation = 1\.05/);
+    });
+});
+
+test('WhiteBalance maps to ColorGradeEffect temperature/tint (URP -100..100 carried verbatim)', () => {
+    withTmp((tmp) => {
+        const wbDoc = ['  m_Name: WhiteBalance', '  active: 1',
+            '  temperature:', '    m_OverrideState: 1', '    m_Value: 30',
+            '  tint:', '    m_OverrideState: 1', '    m_Value: -12.5'];
+        const { res, scene } = runConvert(tmp, [wbDoc]);
+        assert.match(scene, /ColorGradeEffect\.enabled = true/);
+        assert.match(scene, /ColorGradeEffect\.gradeInLog = true/);
+        assert.equal(grade(scene, 'temperature'), 30);
+        assert.equal(grade(scene, 'tint'), -12.5);
+        // Translated component: not in the dropped-settings report.
+        assert.doesNotMatch(res.stdout, /WhiteBalance/);
+    });
+});
+
+test('neutral WhiteBalance (explicit zeros) emits no grade block at all', () => {
+    withTmp((tmp) => {
+        const wbDoc = ['  m_Name: WhiteBalance', '  active: 1',
+            '  temperature:', '    m_OverrideState: 1', '    m_Value: 0',
+            '  tint:', '    m_OverrideState: 1', '    m_Value: 0'];
+        const { scene } = runConvert(tmp, [wbDoc]);
+        assert.doesNotMatch(scene, /ColorGradeEffect\./);
+    });
+});
+
+test('ColorAdjustments colorFilter maps to ColorFilterEffect (sRGB -> linear, rgb-only identity)', () => {
+    withTmp((tmp) => {
+        const { res, scene } = runConvert(tmp,
+            [colAdjDoc({ colorFilter: '{r: 1, g: 0.8, b: 0.6, a: 1}', saturation: 10 })]);
+        assert.match(scene, /ColorFilterEffect\.enabled = true/);
+        // URP applies colorFilter.value.linear: 0.8 -> 0.60383, 0.6 -> 0.31855.
+        const cf = (key) => {
+            const m = scene.match(new RegExp(`ColorFilterEffect\\.${key} = ([-\\d.eE]+)`));
+            return m ? Number(m[1]) : undefined;
+        };
+        assert.equal(cf('colorR'), 1);
+        assert.ok(Math.abs(cf('colorG') - 0.60383) < 1e-4, `colorG ${cf('colorG')}`);
+        assert.ok(Math.abs(cf('colorB') - 0.31855) < 1e-4, `colorB ${cf('colorB')}`);
+        // Multiply/intensity-1 ride the component defaults — no other keys emitted.
+        assert.doesNotMatch(scene, /ColorFilterEffect\.(blendMode|intensity|stackOrder)/);
+        assert.doesNotMatch(res.stdout, /colorFilter/);
+    });
+});
+
+test('opaque-white colorFilter is identity (alpha 1 must not read as an authored filter)', () => {
+    withTmp((tmp) => {
+        const { scene } = runConvert(tmp,
+            [colAdjDoc({ colorFilter: '{r: 1, g: 1, b: 1, a: 1}', saturation: 10 })]);
+        assert.doesNotMatch(scene, /ColorFilterEffect\./);
     });
 });
 
