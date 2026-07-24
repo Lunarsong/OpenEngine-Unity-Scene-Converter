@@ -242,6 +242,15 @@ UASTC KTX2 (block-compressed, pre-mipped) via the engine's
 engine build trees under the current working directory; `--png` (or no
 encoder found) falls back to raw image copies.
 
+Encoding is per SLOT, not per image: colour slots encode `--srgb` into
+`<stem>.ktx2`, mask/metallic-roughness/AO slots `--linear` into
+`<stem>_linear.ktx2`, normal slots `--normal-map` into `<stem>_normal.ktx2`,
+so one image bound as two kinds yields two containers. Existing containers are
+reused rather than re-encoded, and a failed encode degrades to the raw copy
+instead of dropping the texture. Guarded by `tests/texc-staging.test.mjs`,
+which stands in a deterministic encoder (output = a pure function of source
+bytes + flag) so the whole lane is covered without the native tool.
+
 ### Environment
 
 Parses the scene's `RenderSettings` (fog color/mode/range, ambient sky/
