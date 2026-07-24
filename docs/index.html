@@ -187,8 +187,8 @@ the in-editor <strong>Import Unity Package</strong> modal, the standalone
 The modal converts a Unity scene bundle — a raw <code>.unitypackage</code> (e.g. a Synty
 pack) or an already-extracted bundle folder — into engine assets inside the currently
 open project: text <code>.scene</code> files, <code>StandardPBR</code>
-<code>.material</code> assets, copied/encoded textures, and (where the pack uses them)
-project-side water/waterfall surface shaders.
+<code>.material</code> assets, the pack's FBX models, its source textures, and (where the
+pack uses them) project-side water/waterfall surface shaders.
 </p>
 
 <div class="panel ok">
@@ -197,9 +197,11 @@ project-side water/waterfall surface shaders.
         <li><strong>The converter ships with the editor.</strong> If the modal reports
             <em>"Converter tool is not staged,"</em> the editor was built on a machine without
             Node.js ≥ 22 — install Node and rebuild the editor.</li>
-        <li><strong>Import the pack's models first.</strong> The importer matches mesh
-            references against models already in your project. Any meshes it can't find are
-            listed in the completion report; import them and re-run the affected scenes.</li>
+        <li><strong>No pre-steps — the pack brings everything.</strong> Mesh references are
+            matched against models already in your project first; anything missing is
+            <em>extracted from the pack itself</em> into <code>Models_Unity/</code>, and
+            textures stage as source images the engine compiles on import. A fresh, empty
+            project imports a full pack in one pass.</li>
     </ul>
 </div>
 
@@ -247,10 +249,10 @@ project-side water/waterfall surface shaders.
 </div>
 
 <figure>
-    <img src="import-modal-2026-07-23-scene-select.png" alt="The modal after loading a bundle: two scenes AlphaTown and BetaCove listed with checkboxes, both selected, shared-asset counts underneath, destination field below.">
-    <figcaption>Bundle loaded (a two-scene test fixture): both scenes checked, selection count in the
-    header, shared-asset counts — <em>1 models · 1 textures · 1 materials</em> — imported once for any
-    subset.</figcaption>
+    <img src="import-modal-2026-07-23-scene-select.png" alt="The modal after loading a ten-scene bundle: scene checkboxes in a scrollable list, all selected, shared-asset counts underneath, destination field below.">
+    <figcaption>Bundle loaded (a ten-scene test fixture): all scenes checked, selection count in the
+    header, and the scene list scrolls for big packs. Shared-asset counts — <em>2 models · 2 textures ·
+    2 materials</em> — imported once for any subset.</figcaption>
 </figure>
 
 <div class="steps" style="counter-reset: step 3;">
@@ -260,8 +262,9 @@ project-side water/waterfall surface shaders.
     <p>Defaults to the open project's <code>Assets/</code> folder. Edit the field or
        <strong>Browse…</strong> to pick a subfolder. Outputs preserve the converter's relative
        layout under the destination — <code>Materials_Unity/</code>,
-       <code>Textures_Unity/</code>, and one <code>&lt;Scene&gt;_unity.scene</code> per selected
-       scene — so the scenes' relative material and texture references resolve in place.</p>
+       <code>Textures_Unity/</code>, <code>Models_Unity/</code> (pack FBX extracted for meshes
+       your project didn't already have), and one <code>&lt;Scene&gt;_unity.scene</code> per
+       selected scene — so the scenes' relative references resolve in place.</p>
 </div>
 
 <div class="step">
@@ -269,9 +272,12 @@ project-side water/waterfall surface shaders.
     <p>Hit <strong>Import</strong>. The modal validates first (converter available, bundle
        picked, at least one scene selected — problems show as an inline warning, nothing runs).
        A progress bar tracks each conversion phase — <em>phase · detail — step / total</em> —
-       with a live <em>"textures: N encoded…"</em> line below it.</p>
+       with a live <em>"textures: N staged · models: M extracted from pack…"</em> line below
+       it as shared assets stream in.</p>
     <p class="why">Conversion is staged safely before anything touches your Assets folder —
-       the project never sees half-written files.</p>
+       the project never sees half-written files. Textures stage as source images; the
+       engine's native import compiles them (mips + block compression into the project's
+       derived cache) once they land in Assets.</p>
 </div>
 
 <div class="step">
@@ -286,21 +292,25 @@ project-side water/waterfall surface shaders.
 <div class="step">
     <h4>Completion — read the summary, open a scene if you want</h4>
     <p>The outputs move into the destination and the summary appears: scene / entity / material
-       counts, texture stats (encoded, copied, unresolved), a line for <strong>unresolved mesh
-       references</strong> if any, and a <em>"Didn't carry over:"</em> report listing anything
-       in the source that couldn't be carried over — you always know exactly what to revisit
-       by hand.</p>
-    <p>Each imported scene gets an <strong>Open &lt;Scene&gt;</strong> button. <strong>Nothing
-       auto-opens</strong> — opening a scene is always your click. <strong>Dismiss</strong>
-       closes the modal and leaves your current scene untouched.</p>
+       counts, a <em>"Models: N extracted from the pack (M mesh reference(s) seeded)"</em> line
+       when the pack supplied meshes your project lacked, texture staging counts, a line for
+       <strong>unresolved mesh references</strong> only if the pack itself doesn't contain the
+       mesh, and a <em>"Didn't carry over:"</em> report listing anything in the source that
+       couldn't be converted — you always know exactly what to revisit by hand.</p>
+    <p>Each imported scene gets an <strong>Open &lt;Scene&gt;</strong> button — held back
+       behind a brief <em>"Registering imported assets with the project…"</em> note until the
+       freshly moved files are registered, so an opened scene's references resolve immediately.
+       <strong>Nothing auto-opens</strong> — opening a scene is always your click.
+       <strong>Dismiss</strong> closes the modal and leaves your current scene untouched.</p>
 </div>
 
 </div>
 
 <figure>
-    <img src="import-modal-2026-07-23-complete.png" alt="The completion screen: 'Import complete — 2 scene(s) · 0 entities · 0 materials' with Open AlphaTown and Open BetaCove buttons and a Dismiss button.">
-    <figcaption>Completion screen for the same minimal test fixture (hence the zero entity/material
-    counts): per-scene <em>Open</em> buttons, explicit <em>Dismiss</em>, no auto-open.</figcaption>
+    <img src="import-modal-2026-07-23-complete.png" alt="The completion screen: 'Import complete — 10 scene(s) · 20 entities · 2 materials', a models-extracted line, a textures-staged line, per-scene Open buttons and a Dismiss button.">
+    <figcaption>Completion screen for the ten-scene fixture: <em>Models: 2 extracted from the pack
+    (14 mesh reference(s) seeded)</em>, <em>Textures: 2 staged for engine import</em>, per-scene
+    <em>Open</em> buttons, explicit <em>Dismiss</em>, no auto-open.</figcaption>
 </figure>
 
 <h3>What happens where</h3>
@@ -316,7 +326,8 @@ flowchart LR
     E -- "no" --> G["Outputs move\ninto destination"]
     F -- "Overwrite" --> G
     F -- "Cancel" --> H["Nothing written,\nback to config"]
-    G --> I["Summary + Open Scene\n(no auto-open)"]
+    G --> R["Register moved files\nwith the AssetRegistry"]
+    R --> I["Summary + Open Scene\n(no auto-open)"]
 </pre>
 </div>
 
