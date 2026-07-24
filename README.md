@@ -46,7 +46,10 @@ unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 - `--pkg` — directory produced by `tar -xzf pack.unitypackage` (entries are
   `<guid>/pathname` + `<guid>/asset`), or the raw `.unitypackage` itself
   (extracted to a temp dir automatically; very large packs — beyond ~4 GB
-  extracted — must be pre-extracted).
+  extracted — must be pre-extracted). Archive entry names are untrusted: an
+  entry whose destination resolves outside the extraction directory aborts the
+  run with `unitypackage entry escapes extraction dir` rather than being
+  written or quietly clamped.
 - `--scene` — e.g. `scenes/demo.unity` (case-insensitive path suffix) or the
   asset guid. Repeatable: each `--scene` converts one scene in the same run,
   with shared materials/textures emitted once and each `.scene` output

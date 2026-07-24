@@ -85,12 +85,24 @@ function indexUnityPackage(file) {
 
 // Extract to the <guid>/{pathname,asset,asset.meta} layout buildPackageIndex
 // expects. Returns destDir.
+//
+// Entry names come from the archive and are untrusted: a guid segment has no
+// legitimate way to resolve outside destDir, so one that does is a crafted
+// pack. Fail the whole extraction loudly rather than clamp the write — a
+// silently contained escape hides the attempt from the operator. (The leaf is
+// the fixed pathname|asset|asset.meta alternation, so only the guid segment
+// can carry traversal. path.join never re-roots on a rooted segment the way
+// path.resolve does, so `\evil/asset` stays inside; `../evil/asset` does not.)
 function extractUnityPackage(file, destDir) {
     fs.mkdirSync(destDir, { recursive: true });
+    const root = path.resolve(destDir);
+    const rootPrefix = root.endsWith(path.sep) ? root : root + path.sep;
     walkTar(gunzipPackage(file), (name, body) => {
         const m = /^([^/]+)\/(pathname|asset|asset\.meta)$/.exec(name);
         if (!m) return;
         const dir = path.join(destDir, m[1].toLowerCase());
+        if (!(path.resolve(dir) + path.sep).startsWith(rootPrefix))
+            throw new Error(`unitypackage entry escapes extraction dir: ${name}`);
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, m[2]), body);
     });
