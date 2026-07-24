@@ -197,14 +197,9 @@ project-side water/waterfall surface shaders.
         <li><strong>The converter ships with the editor.</strong> If the modal reports
             <em>"Converter tool is not staged,"</em> the editor was built on a machine without
             Node.js ≥ 22 — install Node and rebuild the editor.</li>
-        <li><strong>TextureCompiler is optional but recommended.</strong> When
-            <code>TextureCompiler.exe</code> sits next to <code>Editor.exe</code>, copied textures
-            are encoded to block-compressed, pre-mipped UASTC KTX2. Without it the import falls
-            back to raw PNG copies. The modal tells you which mode it's in.</li>
-        <li><strong>Import the pack's FBX models first.</strong> The converter matches mesh
-            references by filename against models already imported into your project — it does
-            not copy FBX files out of the pack. Meshes the project hasn't imported are listed in
-            the completion report as unresolved; import them and re-run.</li>
+        <li><strong>Import the pack's models first.</strong> The importer matches mesh
+            references against models already in your project. Any meshes it can't find are
+            listed in the completion report; import them and re-run the affected scenes.</li>
     </ul>
 </div>
 
@@ -388,7 +383,7 @@ unity-scene-convert --pkg ./pack --project ./proj --grade-lut</code></pre>
     <tr><td><code>--project</code></td><td>Target engine project. Mesh resolution reads <code>&lt;project&gt;/AssetDatabase.assetdb</code> (override: <code>--assetdb</code>); outputs default under <code>&lt;project&gt;/assets/</code>.</td></tr>
     <tr><td><code>--list-scenes</code></td><td>Inventory mode: one JSON object (scenes with name/path/guid, asset counts) and exit. No conversion.</td></tr>
     <tr><td><code>--json</code></td><td>Machine-readable mode: JSON-lines progress (<code>{"phase","step","total","detail"}</code>) then a final summary object with per-scene counts, the didn't-carry-over report, and every file written. Human diagnostics stay on stderr.</td></tr>
-    <tr><td><code>--texc</code> / <code>--png</code></td><td>Texture encoding: point at <code>TextureCompiler.exe</code> for KTX2/BC7 (also found via <code>GE_TEXC</code>), or force raw PNG copies.</td></tr>
+    <tr><td><code>--texc</code> / <code>--png</code></td><td>Texture encoding: point at the engine’s TextureCompiler binary for KTX2/BC7 (also found via <code>GE_TEXC</code>), or force raw PNG copies.</td></tr>
     <tr><td><code>--grade-lut</code></td><td>Bake ShadowsMidtonesHighlights to a Resolve-style <code>.cube</code> LUT + <code>CubeLutEffect</code> instead of the native <code>ColorGradeEffect</code> three-way mapping.</td></tr>
     <tr><td><code>--unity-project</code></td><td>Path to a real Unity project — pulls what a <code>.unitypackage</code> never ships: the active URP asset's volume profile, SSAO renderer feature, shadow/HDR/MSAA facts.</td></tr>
     <tr><td><code>--local-shadows</code></td><td>Point/spot shadow policy: <code>faithful</code> (default, carries flags + resolution tier) or <code>off</code>.</td></tr>
