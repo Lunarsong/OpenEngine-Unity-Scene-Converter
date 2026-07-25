@@ -322,6 +322,17 @@ three-way corrector graded in ACEScct-shaped log space
   exactly as URP does.
 - **ChromaticAberration** — Unity's normalized `[0,1]` intensity maps onto
   the engine's absolute pixel range (`[0,12]` px, linear).
+- **ColorLookup** — the user's 2D strip LUT texture is transcoded to a
+  Resolve-style `.cube` at convert time (exact texel carry; PNG 8/16-bit
+  truecolor, non-interlaced) and emitted as a `CubeLutEffect` with
+  `inputEncoding = Rec709SRGB` — URP samples the user LUT over sRGB-encoded
+  display colour (core `Color.hlsl ApplyColorGrading`), which is exactly the
+  engine's Rec709SRGB wrap — and `intensity = contribution`. Strip layout:
+  size = height, blue tiles along x, red within a tile, green along v (GPU
+  v=0 = the PNG's bottom row). Inert configs (contribution 0 / no texture —
+  URP's `IsActive` gate) skip silently; non-PNG formats, non-strip
+  dimensions, or a texture missing from the package are honest drops.
+  Guarded by `tests/user-lut-transcode.test.mjs`.
 
 Anything else the user authored in a volume (SplitToning, ChannelMixer,
 ColorCurves, Bloom tint, …) is recorded and

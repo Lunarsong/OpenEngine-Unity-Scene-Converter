@@ -33,6 +33,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const zlib = require('zlib');
 const { spawnSync } = require('child_process');
 const { parseUnityYaml } = require('./unityyaml');
 const skybox = require('./skybox');
@@ -487,6 +488,109 @@ function bakeSmhCubeLut(smh, file) {
                 const mid = 1 - sh - hi;
                 const o = c.map((v, i) => Math.max(0, v * (S[i] * sh + M[i] * mid + H[i] * hi)));
                 lines.push(`${o[0].toFixed(6)} ${o[1].toFixed(6)} ${o[2].toFixed(6)}`);
+            }
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+}
+
+// Minimal PNG decoder for ColorLookup LUT strips. Scope: 8/16-bit truecolor
+// (color types 2 RGB / 6 RGBA), non-interlaced — the shape every Unity LUT
+// strip authoring flow produces (the texture must be imported sRGB-off and
+// uncompressed for URP to accept it). Everything else throws; the caller
+// converts the message into an honest drop note. Kept dependency-free so the
+// C# twin (Png.cs) can mirror it byte-for-byte.
+function decodePng(buf) {
+    if (buf.length < 8 || buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47)
+        throw new Error('not a PNG');
+    let w = 0, h = 0, bitDepth = 0, colorType = 0;
+    const idat = [];
+    let off = 8;
+    while (off + 8 <= buf.length) {
+        const len = buf.readUInt32BE(off);
+        const type = buf.toString('latin1', off + 4, off + 8);
+        const data = buf.subarray(off + 8, off + 8 + len);
+        if (type === 'IHDR') {
+            if (data.length < 13) throw new Error('truncated PNG chunk');
+            w = data.readUInt32BE(0);
+            h = data.readUInt32BE(4);
+            bitDepth = data[8];
+            colorType = data[9];
+            if (data[12] !== 0) throw new Error('interlaced PNG not supported');
+            if (colorType !== 2 && colorType !== 6) throw new Error(`PNG color type ${colorType} not supported (need truecolor RGB/RGBA)`);
+            if (bitDepth !== 8 && bitDepth !== 16) throw new Error(`PNG bit depth ${bitDepth} not supported`);
+            // Hostile-input bound: LUT strips are at most 256^3 (65536x256).
+            // Also what makes the inflate cap below trustworthy.
+            if (w > 65536 || h > 256) throw new Error(`PNG dimensions ${w}x${h} not supported (LUT strips are at most 65536x256)`);
+        } else if (type === 'IDAT') idat.push(data);
+        else if (type === 'IEND') break;
+        off += 12 + len; // len + type + crc (crc not verified; zlib integrity covers the pixels)
+    }
+    if (!w || !h || idat.length === 0) throw new Error('missing IHDR/IDAT');
+    const channels = colorType === 6 ? 4 : 3;
+    const bpp = channels * (bitDepth >> 3);
+    const stride = w * bpp;
+    // Inflate is capped at the byte count the (bounded) IHDR declares, so a
+    // crafted zlib bomb cannot balloon past the strip's own size. ALL inflate
+    // failures (bomb overflow, corrupt stream) normalize to one fixed string:
+    // the underlying zlib message differs per runtime, and the resulting drop
+    // note is byte-compared against the C# twin.
+    let raw;
+    try {
+        raw = zlib.inflateSync(Buffer.concat(idat), { maxOutputLength: h * (stride + 1) });
+    } catch {
+        throw new Error('PNG inflate failed');
+    }
+    if (raw.length < h * (stride + 1)) throw new Error('truncated PNG pixel data');
+    // Un-filter (spec filters 0-4). Recon works on BYTES regardless of depth.
+    const px = Buffer.alloc(h * stride);
+    for (let y = 0; y < h; y++) {
+        const f = raw[y * (stride + 1)];
+        const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+        const outAt = y * stride, prevAt = outAt - stride;
+        for (let x = 0; x < stride; x++) {
+            const a = x >= bpp ? px[outAt + x - bpp] : 0;
+            const b = y > 0 ? px[prevAt + x] : 0;
+            const c = x >= bpp && y > 0 ? px[prevAt + x - bpp] : 0;
+            let v = line[x];
+            if (f === 1) v += a;
+            else if (f === 2) v += b;
+            else if (f === 3) v += (a + b) >> 1;
+            else if (f === 4) {
+                const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+                v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+            } else if (f !== 0) throw new Error(`bad PNG filter ${f}`);
+            px[outAt + x] = v & 0xff;
+        }
+    }
+    return { width: w, height: h, channels, bitDepth, px };
+}
+
+// [r,g,b] in 0..1 at (x, y) where y is a PNG ROW (file order, top row first).
+function pngTexel(img, x, y) {
+    const bytes = img.bitDepth >> 3;
+    const base = (y * img.width + x) * img.channels * bytes;
+    const read = img.bitDepth === 8
+        ? (i) => img.px[base + i] / 255
+        : (i) => ((img.px[base + i * 2] << 8) | img.px[base + i * 2 + 1]) / 65535;
+    return [read(0), read(1), read(2)];
+}
+
+// URP ColorLookup 2D strip -> Resolve-style .cube 3D LUT, exact texel carry
+// (no resampling, no color-space transform — the strip is authored sRGB-off;
+// the emitter's Rec709SRGB input encoding reproduces URP's sRGB wrap at
+// sample time). Strip layout per core Color.hlsl ApplyLut2D/GetLutStripValue:
+// size = texture height, slices tiled along x indexed by BLUE (each slice
+// `size` wide), RED along x within a slice, GREEN along v. GPU v=0 is the
+// texture's BOTTOM row = the PNG's LAST file row (PNG stores the top row
+// first), so green flips against file rows.
+function bakeLookupCubeLut(img, file) {
+    const size = img.height;
+    const lines = ['TITLE "URP ColorLookup strip transcode (unity-scene-convert)"',
+        `LUT_3D_SIZE ${size}`];
+    for (let b = 0; b < size; b++)
+        for (let g = 0; g < size; g++)
+            for (let r = 0; r < size; r++) { // red fastest per .cube spec
+                const t = pngTexel(img, b * size + r, size - 1 - g);
+                lines.push(`${t[0].toFixed(6)} ${t[1].toFixed(6)} ${t[2].toFixed(6)}`);
             }
     fs.writeFileSync(file, lines.join('\n') + '\n');
 }
@@ -1941,7 +2045,58 @@ function emitScene(ctx, st, sceneName) {
         const lgg = (vol.LiftGammaGain && vol.LiftGammaGain.active) ? vol.LiftGammaGain : null;
         const lggLive = lgg && [lgg.lift, lgg.gamma, lgg.gain].some(w => Array.isArray(w) && !isIdentityWheel(w));
 
-        if (ctx.gradeLutFallback && smhLive && ctx.projectDir) {
+        // URP ColorLookup (user 2D strip LUT) -> CubeLutEffect. Semantics from
+        // core Color.hlsl ApplyColorGrading: the user LUT is sampled over
+        // sRGB-ENCODED display color and lerped by `contribution`
+        // (input = lerp(input, lut(sRGB(input)), contribution), then back to
+        // linear) — exactly CubeLutEffect with Rec709SRGB input encoding and
+        // intensity = contribution. Only divergence: URP lerps in the sRGB
+        // domain, the engine lerps in linear after decode — identical at 0/1,
+        // sub-1% mid-blend. URP's IsActive gate (contribution > 0 AND a valid
+        // LUT texture; contribution DEFAULTS to 0) makes texture-only or
+        // zero-contribution authoring inert in Unity too — inert configs skip
+        // silently; real translation failures become drop notes.
+        let lookupEmitted = false;
+        {
+            const lookup = (vol.ColorLookup && vol.ColorLookup.active) ? vol.ColorLookup : null;
+            const rawContrib = lookup && typeof lookup.contribution === 'number' ? lookup.contribution : 0;
+            const contrib = rawContrib > 1 ? 1 : rawContrib; // ClampedFloatParameter [0,1]
+            const texGuid = lookup && typeof lookup.texture === 'string'
+                ? ((lookup.texture.match(/guid:\s*([0-9a-fA-F]{32})/) || [])[1] || '').toLowerCase() : '';
+            if (lookup && contrib > 0 && texGuid) {
+                const entry = ctx.pkg ? ctx.pkg.get(texGuid) : null;
+                const ext = entry ? path.extname(entry.assetPath).toLowerCase() : '';
+                if (!ctx.projectDir) {
+                    noteDropped('volume grade', 'ColorLookup (needs --project to write the transcoded .cube LUT)', ctx.verbose);
+                } else if (!entry) {
+                    noteDropped('volume grade', `ColorLookup (LUT texture ${texGuid} not found in the package)`, ctx.verbose);
+                } else if (ext !== '.png') {
+                    noteDropped('volume grade', `ColorLookup (LUT texture format '${ext}' not supported yet; PNG strips only)`, ctx.verbose);
+                } else {
+                    try {
+                        const img = decodePng(fs.readFileSync(path.join(entry.dir, 'asset')));
+                        if (img.width !== img.height * img.height)
+                            throw new Error(`${img.width}x${img.height} is not a LUT strip (width must equal height^2)`);
+                        // ASSET-ROOT-relative name, same rule as the SMH bake below.
+                        const lutName = `${sceneName}_lookup_lut.cube`;
+                        const lutAbs = path.join(ctx.projectDir, 'assets', lutName);
+                        bakeLookupCubeLut(img, lutAbs);
+                        recordOutput(ctx, lutAbs, 'lut');
+                        out.push(`CubeLutEffect.enabled = true`);
+                        out.push(`CubeLutEffect.stackOrder = 0`);
+                        out.push(`CubeLutEffect.intensity = ${fmtF(contrib)}`);
+                        out.push(`CubeLutEffect.inputEncoding = 1`); // Rec709SRGB
+                        out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
+                        warn(`volume ColorLookup ${path.basename(entry.assetPath)} (${img.height}^3 strip) -> assets/${lutName}, contribution ${fmtF(contrib)}`, ctx.verbose);
+                        lookupEmitted = true;
+                    } catch (err) {
+                        noteDropped('volume grade', `ColorLookup (${path.basename(entry.assetPath)}: ${err.message})`, ctx.verbose);
+                    }
+                }
+            }
+        }
+
+        if (ctx.gradeLutFallback && smhLive && ctx.projectDir && !lookupEmitted) {
             // Opt-in legacy path: bake SMH to a Resolve-style .cube (see
             // bakeSmhCubeLut). ASSET-ROOT-relative name: SceneIO resolves relative
             // lutAsset paths against <project>/assets, so "assets/x.cube" would
@@ -1961,6 +2116,8 @@ function emitScene(ctx, st, sceneName) {
         } else {
             // Native three-way bands. Unlike the LUT bake these need no --project
             // dir (no file is written), so SMH/LGG now carry for pkg-only runs too.
+            if (ctx.gradeLutFallback && smhLive && lookupEmitted)
+                warn('volume ShadowsMidtonesHighlights: --grade-lut bake superseded by ColorLookup (single CubeLutEffect slot); SMH carries as native ColorGradeEffect bands', ctx.verbose);
             let bands = null;
             if (smhLive) bands = smhToBands(smh);
             if (lggLive) bands = bands ? addBands(bands, lggToBands(lgg)) : lggToBands(lgg);
@@ -2107,6 +2264,7 @@ function emitScene(ctx, st, sceneName) {
             'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands (or --grade-lut .cube fallback)
             'LiftGammaGain',               // -> native ColorGradeEffect bands via ASC CDL
             'Tonemapping',                 // deliberately substituted with ACES (documented divergence)
+            'ColorLookup',                 // -> CubeLutEffect (strip -> .cube transcode; failures noteDropped above)
         ]);
         const componentHasEffect = (comp) => Object.entries(comp).some(([k, v]) => k !== 'active'
             && (Array.isArray(v) ? !isIdentityWheel(v)
@@ -3563,4 +3721,6 @@ module.exports = {
     conj, qMul, qRotate, kYFlip, emitObjectQuat, emitDirectionalQuat, composeWorldTRS,
     // Ambient colour space (exercised by tests/ambient-linearization.test.mjs).
     srgbToLinear, linearizeAmbientColor, emitAmbientLightLines,
+    // ColorLookup strip -> .cube (exercised by tests/user-lut-transcode.test.mjs).
+    decodePng, bakeLookupCubeLut,
 };
