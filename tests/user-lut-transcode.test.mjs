@@ -148,6 +148,34 @@ const kBombPng = Buffer.concat([kSig,
 const kCorruptPng = Buffer.concat([kSig,
     chunk('IHDR', ihdrData(64, 8)),
     chunk('IDAT', Buffer.from('garbage-bytes-here')), chunk('IEND', Buffer.alloc(0))]);
+// The IDAT deflate payload of a REAL strip PNG (encodePng emits exactly
+// signature | IHDR | IDAT | IEND, so the payload sits at a fixed offset).
+function stripIdat(size) {
+    const png = neutralStrip(size);
+    const at = 8 + 12 + 13; // signature + IHDR chunk
+    assert.equal(png.toString('latin1', at + 4, at + 8), 'IDAT');
+    return { ihdr: png.subarray(8, at), idat: png.subarray(at + 8, at + 8 + png.readUInt32BE(at)) };
+}
+// cut(n) -> how many of the n deflate bytes survive the truncation.
+function cutStripPng(cut) {
+    const { ihdr, idat } = stripIdat(8);
+    return Buffer.concat([kSig, ihdr, chunk('IDAT', idat.subarray(0, cut(idat.length))),
+        chunk('IEND', Buffer.alloc(0))]);
+}
+// Truncated-download shapes on a valid 64x8 strip (1544 expected bytes): the
+// zlib stream never reaches Z_STREAM_END. inflateSync THROWS on these — the
+// reference behavior the C# twin has to reproduce, since .NET's ZLibStream
+// hands back the partial output without complaining.
+const kTruncDeflatePng = cutStripPng((n) => n >> 1); // cut at ~50%
+// Only the 4-byte Adler-32 lost: still decodes all 1544 expected bytes, so the
+// missing terminator is the ONLY thing marking it corrupt.
+const kAdlerCutPng = cutStripPng((n) => n - 4);
+// The other short-output class: a VALID, COMPLETE zlib stream that decodes to
+// fewer bytes than the header declares. Inflate SUCCEEDS; the size check
+// reports it — a different note, and it must stay reachable.
+const kShortDeflatePng = Buffer.concat([kSig,
+    chunk('IHDR', ihdrData(64, 8)),
+    chunk('IDAT', zlib.deflateSync(Buffer.alloc(100))), chunk('IEND', Buffer.alloc(0))]);
 
 test('hostile chunk length terminates (no signed-length wedge): missing IHDR/IDAT', () => {
     assert.throws(() => decodePng(kHostileChunkPng), /missing IHDR\/IDAT/);
@@ -168,6 +196,15 @@ test('zlib bomb past the declared size fails as the normalized inflate error', (
 
 test('corrupt IDAT fails as the same normalized inflate error', () => {
     assert.throws(() => decodePng(kCorruptPng), (e) => e.message === 'PNG inflate failed');
+});
+
+test('a deflate stream cut mid-IDAT is an inflate failure, not a short read', () => {
+    assert.throws(() => decodePng(kTruncDeflatePng), (e) => e.message === 'PNG inflate failed');
+    assert.throws(() => decodePng(kAdlerCutPng), (e) => e.message === 'PNG inflate failed');
+});
+
+test('a COMPLETE zlib stream that decodes short is the size check, not an inflate failure', () => {
+    assert.throws(() => decodePng(kShortDeflatePng), (e) => e.message === 'truncated PNG pixel data');
 });
 
 test('bakeLookupCubeLut: neutral strip -> identity .cube (green axis flipped from file rows)', () => {
@@ -400,6 +437,9 @@ for (const [name, payload, note] of [
     ['truncated IHDR', () => kTruncatedPng, /ColorLookup \(TealOrange\.png: truncated PNG chunk\)/],
     ['huge dimensions', () => kHugeDimsPng, /ColorLookup \(TealOrange\.png: PNG dimensions 4294967295x4294967295 not supported/],
     ['zlib bomb', () => kBombPng, /ColorLookup \(TealOrange\.png: PNG inflate failed\)/],
+    ['deflate stream cut mid-IDAT', () => kTruncDeflatePng, /ColorLookup \(TealOrange\.png: PNG inflate failed\)/],
+    ['IDAT missing only its Adler-32', () => kAdlerCutPng, /ColorLookup \(TealOrange\.png: PNG inflate failed\)/],
+    ['complete-but-short IDAT', () => kShortDeflatePng, /ColorLookup \(TealOrange\.png: truncated PNG pixel data\)/],
 ]) {
     test(`CLI terminates and honestly drops a ${name} LUT`, () => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'userlut-'));
