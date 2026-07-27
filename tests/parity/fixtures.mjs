@@ -1070,6 +1070,23 @@ export function buildCorpus(root) {
                 floats: { _Surface: 0, _Metallic: 0, _Smoothness: 0.5 },
                 colors: { _BaseColor: [0.5, 0.5, 0.5, 1], _EmissionColor: [2, 1, 0.5, 1] },
             }),
+            // Drop-corner sweep: premultiply blend, front-face culling, albedo-alpha
+            // smoothness channel, detail + parallax layers — every one a report line,
+            // none a mapping. Albedo binds via the legacy _MainTex alias and takes its
+            // ST from the _MainTex slot (no _BaseMap authored at all).
+            [M(21)]: matYaml('Urp_DropCorners', {
+                shaderGuid: '933532a4fcc9baf4fa0491de14d08ed7',
+                keywords: ['_SURFACE_TYPE_TRANSPARENT', '_ALPHAPREMULTIPLY_ON'],
+                renderType: 'Transparent',
+                texEnvs: {
+                    _MainTex: { guid: UT(1), scale: [3, 1], offset: [0.5, 0.25] },
+                    _DetailAlbedoMap: UT(2),
+                    _ParallaxMap: UT(4),
+                },
+                floats: { _Surface: 1, _Blend: 1, _Cull: 1, _SmoothnessTextureChannel: 1,
+                          _Metallic: 0.1, _Smoothness: 0.7 },
+                colors: { _BaseColor: [0.9, 0.9, 1, 0.5] },
+            }),
         };
         const sceneObjects = [
             meshObjectYaml(1000, 'FullProp', null, { matGuids: [M(1)] }),
@@ -1093,6 +1110,7 @@ export function buildCorpus(root) {
             meshObjectYaml(4100, 'UrpCutout', null, { matGuids: [M(18)] }),
             meshObjectYaml(4200, 'UrpAdditive', null, { builtinFileId: 10209, matGuids: [M(19)] }),
             meshObjectYaml(4300, 'UrpDeadEmission', null, { matGuids: [M(20)] }),
+            meshObjectYaml(4400, 'UrpDropCorners', null, { builtinFileId: 10209, matGuids: [M(21)] }),
             meshObjectYaml(2600, 'TwoMat', null, { matGuids: [M(1), M(3)] }),
             meshObjectYaml(2700, 'MissingMat', null, { matGuids: ['00000000000000000000000000nosuch'] }),
             meshObjectYaml(2800, 'Hidden', null, { inactive: true }),
