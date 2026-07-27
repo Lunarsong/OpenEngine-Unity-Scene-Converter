@@ -2489,7 +2489,7 @@ const sanitizeFileName = (s) => (s || 'Material').replace(/[^A-Za-z0-9._-]+/g, '
 // Parse the m_SavedProperties of a Unity material YAML into a plain struct.
 function parseUnityMat(text) {
     if (!/m_SavedProperties:/.test(text)) return null;
-    const info = { shaderGuid: null, keywords: new Set(), renderType: '', texEnvs: {}, floats: {}, colors: {} };
+    const info = { shaderGuid: null, keywords: new Set(), renderType: '', texEnvs: {}, texST: {}, floats: {}, colors: {} };
     const sh = text.match(/m_Shader:\s*\{fileID:\s*[-\d]+,\s*guid:\s*([0-9a-fA-F]{32})/);
     if (sh) info.shaderGuid = sh[1].toLowerCase();
     const kw = text.match(/m_ValidKeywords:\s*([\s\S]*?)\n\s*m_InvalidKeywords:/);
@@ -2500,6 +2500,14 @@ function parseUnityMat(text) {
     if (texBlock) {
         const re = /-\s*(\w+):\s*\n\s*m_Texture:\s*\{fileID:\s*(\d+)(?:,\s*guid:\s*([0-9a-f]{32}))?/g;
         let m; while ((m = re.exec(texBlock[1]))) if (m[3]) info.texEnvs[m[1]] = m[3];
+        // Per-slot UV transform (m_Scale/m_Offset), recorded whether or not the slot
+        // binds a texture: URP Lit's shared _BaseMap ST transforms EVERY sample, so
+        // it matters even when _BaseMap itself is empty. Identity slots are omitted.
+        const stRe = /-\s*(\w+):\s*\n\s*m_Texture:\s*\{[^}]*\}\s*\n\s*m_Scale:\s*\{x:\s*([-0-9.eE]+),\s*y:\s*([-0-9.eE]+)\}\s*\n\s*m_Offset:\s*\{x:\s*([-0-9.eE]+),\s*y:\s*([-0-9.eE]+)\}/g;
+        while ((m = stRe.exec(texBlock[1]))) {
+            const sx = +m[2], sy = +m[3], ox = +m[4], oy = +m[5];
+            if (sx !== 1 || sy !== 1 || ox !== 0 || oy !== 0) info.texST[m[1]] = [sx, sy, ox, oy];
+        }
     }
     for (const m of text.matchAll(/-\s*(_\w+):\s*([-0-9.eE]+)\s*$/gm)) info.floats[m[1]] = parseFloat(m[2]);
     for (const m of text.matchAll(/-\s*(_\w+):\s*\{r:\s*([-0-9.eE]+),\s*g:\s*([-0-9.eE]+),\s*b:\s*([-0-9.eE]+),\s*a:\s*([-0-9.eE]+)\}/g))
@@ -2646,16 +2654,27 @@ function pickTexture(ctx, info, candidates, texKind) {
 
 const round7 = (v) => Math.round(v * 1e7) / 1e7;
 
-// Synty shader-GUID (8-char prefix) -> dispatch classification. Every material in
-// both packs is a Synty custom ShaderGraph shader, not stock URP/Lit. The
-// workhorse families are functionally URP-Lit PBR surfaces and map faithfully to
-// standard_pbr; the FX/particle/sky/triplanar families are degraded to a flat
-// standard_pbr map THIS phase (their dedicated surfaces — triplanar_pbr, unlit —
-// are later slices) and carry a `note` so the per-scene report is honest about
-// the gap rather than silently defaulting. `unmappable` families have no OpenPBR
-// analogue at all (auto-generated ShaderGraph node properties): they are detected
-// and left at the FBX default instead of emitting a garbage material.
+// Shader-GUID (8-char prefix) -> dispatch classification. Nearly every material
+// in the packs is a Synty custom ShaderGraph shader; stock URP/Lit appears too
+// (ER ships lambert24.mat on it) and any generic URP project leans on it. The
+// workhorse Synty families are functionally URP-Lit PBR surfaces and map
+// faithfully to standard_pbr; the FX/particle/sky/triplanar families are
+// degraded to a flat standard_pbr map THIS phase (their dedicated surfaces —
+// triplanar_pbr, unlit — are later slices) and carry a `note` so the per-scene
+// report is honest about the gap rather than silently defaulting. `unmappable`
+// families have no OpenPBR analogue at all (auto-generated ShaderGraph node
+// properties): they are detected and left at the FBX default instead of
+// emitting a garbage material. `urpLit` marks Unity's hand-written URP standard
+// shader: buildMaterialDoc maps its property set deliberately (keyword-gated
+// emission, shared _BaseMap ST tiling) and honest-drops what the schema cannot
+// express (smoothness-in-alpha metallic maps, detail/parallax layers) instead
+// of binding them to wrong channels.
 const kShaderDispatch = {
+    // Stock URP Lit.shader (933532a4fcc9baf4fa0491de14d08ed7 in every URP
+    // install). aoMap carries over but is sampled from .r where URP reads .g —
+    // identical for grayscale AO maps, wrong for channel-packed ones.
+    '933532a4': { name: 'URP_Lit',                surface: 'standard_pbr', urpLit: true,
+                  note: 'stock URP Lit; aoMap read .r vs URP .g (grayscale AO identical)' },
     '0730dae3': { name: 'Generic_Basic',          surface: 'standard_pbr' },
     'baa0a858': { name: 'Generic_Decals',         surface: 'standard_pbr' },
     '3b44a38e': { name: 'Generic_Standard',       surface: 'standard_pbr', note: 'character hair/skin masks dropped' },
@@ -2748,7 +2767,8 @@ function classifyMaterial(info, name) {
             && !triplanarToggleOn(info.floats, '_Enable_Triplanar_Normals'))
             return { family: disp.name, mappable: true, surface: 'standard_pbr',
                      note: 'triplanar disabled -> flat base-map map' };
-        return { family: disp.name, mappable: true, surface: disp.surface, note: disp.note, hideMesh: !!disp.hideMesh };
+        return { family: disp.name, mappable: true, surface: disp.surface, note: disp.note,
+                 hideMesh: !!disp.hideMesh, urpLit: !!disp.urpLit };
     }
     const label = 'Unknown(' + (info.shaderGuid || 'null').slice(0, 8) + ')';
     if (hasAutoNamedProps(info) && !hasRecognizableSlot(info))
@@ -2777,9 +2797,13 @@ function linearizeUnityTint(rgba) {
 // Build an engine StandardPBR MaterialDocument from parsed Unity .mat props.
 // Returns { doc, needsFidelity }: needsFidelity is false for a plain white
 // opaque untextured material (no gain over the FBX default; skip to bound the
-// blast radius).
-function buildMaterialDoc(ctx, info, materialName) {
+// blast radius). `cls` is the dispatch classification: its urpLit flag switches
+// the URP-Lit-exact branches (keyword-gated emission, shared _BaseMap ST
+// tiling, honest per-material drops for what the schema cannot express).
+function buildMaterialDoc(ctx, info, materialName, cls) {
     const f = info.floats, c = info.colors, kw = info.keywords, rt = info.renderType;
+    const urp = !!(cls && cls.urpLit);
+    const dropUrp = (detail) => noteDropped('material', `URP/Lit ${materialName}: ${detail}`, ctx.verbose);
     const doc = {
         schemaVersion: 3,
         materialName,
@@ -2816,15 +2840,40 @@ function buildMaterialDoc(ctx, info, materialName) {
     else if (cutout) doc.alphaMode = 'Mask';
     else doc.alphaMode = 'Opaque';
 
+    // URP _Blend (0 alpha / 1 premultiply / 2 additive / 3 multiply). Additive is
+    // exactly representable as T1 blend state (no shader coupling). Premultiply and
+    // multiply are NOT: URP folds them into the fragment shader (_ALPHAPREMULTIPLY_ON
+    // premultiplies the diffuse base, _ALPHAMODULATE_ON modulates colour by alpha),
+    // which stock standard_pbr does not do — those render as straight alpha and are
+    // reported, never silently re-derived.
+    if (urp && doc.alphaMode === 'Blend' && f._Blend !== undefined) {
+        if (f._Blend === 2)
+            doc.blend = { srcColor: 'SrcAlpha', dstColor: 'One', srcAlpha: 'One', dstAlpha: 'One' };
+        else if (f._Blend === 1)
+            dropUrp('_Blend premultiply approximated as straight alpha (standard_pbr does not premultiply the base)');
+        else if (f._Blend === 3)
+            dropUrp('_Blend multiply approximated as straight alpha (no alpha-modulate path)');
+    }
+
     if (f._Cull === 0) doc.doubleSided = true;
+    if (urp && f._Cull === 1) dropUrp('_Cull 1 (front-face culling) has no engine mapping');
 
     const props = {};
     const tint = linearizeUnityTint(baseCol);
     props.baseColor = [round7(tint[0]), round7(tint[1]), round7(tint[2]), round7(tint[3])];
     if (f._Metallic !== undefined) props.metallic = Math.max(0, Math.min(1, f._Metallic));
+    // URP specular workflow (_WorkflowMode 0) drives F0 from _SpecColor/_SpecGlossMap
+    // and hides the metallic slider (its serialized value is stale). No specular-color
+    // lobe mapping exists — treat as dielectric and report.
+    if (urp && f._WorkflowMode === 0) {
+        props.metallic = 0;
+        dropUrp('specular workflow (_WorkflowMode 0) has no mapping — treated as dielectric (metallic 0)');
+    }
     const gloss = f._Smoothness !== undefined ? f._Smoothness
         : (f._Glossiness !== undefined ? f._Glossiness : undefined);
     if (gloss !== undefined) props.roughness = Math.max(0.04, Math.min(1, 1 - gloss));
+    if (urp && f._SmoothnessTextureChannel === 1)
+        dropUrp('smoothness from albedo alpha (_SmoothnessTextureChannel 1) not representable; scalar _Smoothness used');
     if (doc.alphaMode === 'Blend') props.opacity = round7(baseCol[3]);
     if (doc.alphaMode === 'Mask') {
         const cutoff = f._Cutoff !== undefined ? f._Cutoff
@@ -2838,10 +2887,29 @@ function buildMaterialDoc(ctx, info, materialName) {
     if (albedo) { textures.albedoMap = { guid: albedo.guid, path: albedo.path }; hasTexture = true; }
     const normal = pickTexture(ctx, info, ['_Normal_Map', '_Normals', '_BumpMap', '_NormalMap'], 'normal');
     if (normal) { textures.normalMap = { guid: normal.guid, path: normal.path }; hasTexture = true; }
-    const mr = pickTexture(ctx, info, ['_MetallicGlossMap', '_SpecGlossMap', '_MetallicRoughnessMap'], 'linear');
+    // URP metallic/spec-gloss maps pack R=metallic (or specular RGB) with smoothness
+    // in ALPHA; the engine's metallicRoughnessMap is glTF G=roughness/B=metallic, so
+    // binding one would shade from garbage channels. Drop the map (reported) and let
+    // the scalar _Metallic/_Smoothness carry the material. Non-URP families keep the
+    // bind: the Synty census has zero metallic-gloss map users, and an unknown shader
+    // naming a slot _MetallicRoughnessMap is already declaring glTF layout.
+    const mr = urp ? null
+        : pickTexture(ctx, info, ['_MetallicGlossMap', '_SpecGlossMap', '_MetallicRoughnessMap'], 'linear');
     if (mr) { textures.metallicRoughnessMap = { guid: mr.guid, path: mr.path }; hasTexture = true; }
+    if (urp && (info.texEnvs._MetallicGlossMap || info.texEnvs._SpecGlossMap))
+        dropUrp('metallic/spec-gloss map dropped (URP packs smoothness in alpha — no glTF G/B channel equivalent); scalar _Metallic/_Smoothness used');
     const ao = pickTexture(ctx, info, ['_OcclusionMap', '_AO_Map'], 'linear');
     if (ao) { textures.aoMap = { guid: ao.guid, path: ao.path }; hasTexture = true; }
+    if (urp) {
+        if (normal && f._BumpScale !== undefined && f._BumpScale !== 1)
+            dropUrp('_BumpScale != 1 dropped (no normal-strength lane; normal map applied at 1.0)');
+        if (ao && f._OcclusionStrength !== undefined && f._OcclusionStrength !== 1)
+            dropUrp('_OcclusionStrength != 1 dropped (aoMap applied at full strength)');
+        if (info.texEnvs._DetailAlbedoMap || info.texEnvs._DetailNormalMap)
+            dropUrp('detail layer dropped (_DetailAlbedoMap/_DetailNormalMap)');
+        if (info.texEnvs._ParallaxMap)
+            dropUrp('_ParallaxMap dropped (no height/parallax support)');
+    }
 
     // Emission: engine emissive = (emissiveTex + tint) * (nits / 203). Synty's
     // emission is a masked map modulated by an (often HDR) emission color, so
@@ -2856,22 +2924,25 @@ function buildMaterialDoc(ctx, info, materialName) {
     // a Moon/Stars starfield in _Emission_Map, and every PolygonElven atlas
     // material carries an *_Emissive atlas — all with _Enable_Emission: 0.
     // Translating those as live emission painted a 203-nit starfield onto
-    // every window pane (the round-2 "blue haze"). When the float is absent
-    // (URP Lit-style shaders), fall back to the _EMISSION keyword when a map
-    // is bound, or an HDR emission color with no map (Gen_FireFrames_01).
+    // every window pane (the round-2 "blue haze"). When the float is absent,
+    // fall back to the _EMISSION keyword when a map is bound, or an HDR
+    // emission color with no map (Gen_FireFrames_01). Dispatched URP/Lit is
+    // stricter and exact: URP gates ALL emission (map or colour-only) on the
+    // _EMISSION keyword, and any keyword-on non-black colour emits — no HDR
+    // threshold heuristic.
     const emCol = c._Emission_Color || c._EmissionColor;
     const emMap = pickTexture(ctx, info, ['_Emission_Map', '_EmissionMap'], 'color');
     const emMax = emCol ? Math.max(emCol[0], emCol[1], emCol[2]) : 0;
     let emissionEnabled = f._Enable_Emission !== undefined
         ? f._Enable_Emission === 1
-        : (emMap ? kw.has('_EMISSION') : true);
+        : (urp || emMap ? kw.has('_EMISSION') : true);
     // Every Synty graph MULTIPLIES the map by _Emission_Color, so a black
     // color zeroes a bound map even with the branch enabled (Generic_01_A).
     // The engine's additive (tex + tint) form can't express that product;
     // treat map-with-black-color as no emission.
     if (emMap && emMax < 0.004) emissionEnabled = false;
     let hasEmission = false;
-    if (emissionEnabled && (emMap || emMax > 1.01)) {
+    if (emissionEnabled && (emMap || emMax > (urp ? 0.004 : 1.01))) {
         const lum = kEmissionPaperwhiteNits * Math.max(1, emMax);
         if (emMap) {
             textures.emissiveMap = { guid: emMap.guid, path: emMap.path };
@@ -2883,6 +2954,24 @@ function buildMaterialDoc(ctx, info, materialName) {
         }
         props.emissionLuminance = round7(lum);
         hasEmission = true;
+    }
+
+    // URP Lit transforms EVERY texture sample by the shared _BaseMap ST (_MainTex is
+    // the pre-upgrade alias), so the one transform applies to all bound slots. The
+    // engine's per-slot transforms operate on the FBX importer's flipped V axis
+    // (TexCoords[1] = 1 - v): identity cancels via texture row order (see the water
+    // scroll note), a general transform does not. Solving 1 - v' = sy*(1 - v) + oy
+    // gives the engine V row {sy, 1 - sy - oy}; the map commutes with clamping
+    // (1 - clamp01(x) = clamp01(1 - x)), so it is exact under wrap AND clamp.
+    if (urp) {
+        const st = info.texST._BaseMap || info.texST._MainTex;
+        if (st) {
+            const [sx, sy, ox, oy] = st;
+            for (const t of Object.values(textures)) {
+                t.tiling = [round7(sx), round7(sy)];
+                t.offset = [round7(ox), round7(1 - sy - oy)];
+            }
+        }
     }
 
     doc.properties = props;
@@ -3313,7 +3402,7 @@ function resolveMaterial(ctx, unityMatGuid) {
                     ? buildWaterDoc(ctx, info, name)
                     : cls.surface === 'waterfall_fx'
                     ? buildFallsDoc(ctx, info, name)
-                    : buildMaterialDoc(ctx, info, name);
+                    : buildMaterialDoc(ctx, info, name, cls);
                 if (needsFidelity) {
                     const base = sanitizeFileName(name) + '__' + unityMatGuid.slice(0, 8);
                     const rel = kMatOutRel + '/' + base + '.material';

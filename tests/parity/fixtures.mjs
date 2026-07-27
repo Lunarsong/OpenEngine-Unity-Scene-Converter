@@ -488,6 +488,8 @@ function buildMultiNodeFbx() {
 }
 
 // -------------------------------------------------------------- .mat YAML --
+// texEnvs values: texture guid string, or { guid, scale, offset } to author a
+// non-identity per-slot ST (URP Lit's shared _BaseMap tiling).
 function matYaml(name, { shaderGuid, keywords = [], renderType = 'Opaque', texEnvs = {}, floats = {}, colors = {} }) {
     const L = ['%YAML 1.1', '%TAG !u! tag:unity3d.com,2011:', '--- !u!21 &2100000', 'Material:', `  m_Name: ${name}`];
     L.push(`  m_Shader: {fileID: 4800000, guid: ${shaderGuid}, type: 3}`);
@@ -503,11 +505,14 @@ function matYaml(name, { shaderGuid, keywords = [], renderType = 'Opaque', texEn
     L.push('  m_SavedProperties:');
     L.push('    serializedVersion: 3');
     L.push('    m_TexEnvs:');
-    for (const [slot, guid] of Object.entries(texEnvs)) {
+    for (const [slot, v] of Object.entries(texEnvs)) {
+        const t = typeof v === 'string' ? { guid: v } : v;
+        const scale = t.scale || [1, 1];
+        const offset = t.offset || [0, 0];
         L.push(`    - ${slot}:`);
-        L.push(`        m_Texture: {fileID: 2800000, guid: ${guid}, type: 3}`);
-        L.push('        m_Scale: {x: 1, y: 1}');
-        L.push('        m_Offset: {x: 0, y: 0}');
+        L.push(`        m_Texture: {fileID: 2800000, guid: ${t.guid}, type: 3}`);
+        L.push(`        m_Scale: {x: ${scale[0]}, y: ${scale[1]}}`);
+        L.push(`        m_Offset: {x: ${offset[0]}, y: ${offset[1]}}`);
     }
     L.push('    m_Ints: []');
     L.push('    m_Floats:');
@@ -898,9 +903,14 @@ export function buildCorpus(root) {
         const pkg = path.join(dir, 'pkg');
         const T = (n) => `00000000000000000000000000t${String(n).padStart(5, '0')}`;
         const M = (n) => `00000000000000000000000000m${String(n).padStart(5, '0')}`;
+        // Hex-only texture guids: the parser's guid regex is [0-9a-f]{32}, so the
+        // legacy T(n) ids (with their 't') never bind — these do.
+        const UT = (n) => `00000000000000000000000000ab000${n}`;
         const texEntries = {};
         for (let i = 1; i <= 8; i++)
             texEntries[T(i)] = { pathname: `Assets/Pack/Textures/Tex_${i}_Map.png`, asset: `PNG-BYTES-${i}` };
+        for (let i = 1; i <= 5; i++)
+            texEntries[UT(i)] = { pathname: `Assets/Pack/Textures/T_Urp_${i}.png`, asset: `PNG-URP-${i}` };
 
         const kGlass06Guid = 'b253cb5ee0fc4a047be47d7b7a1c42dc'; // remap trigger (convert.js kGlass06MatGuid)
         const kWaterBodyGuid = '6d24c2fc3a1139d4ab252fdaf2d031d2'; // remap destination (kWaterBodyMatGuid)
@@ -1021,6 +1031,45 @@ export function buildCorpus(root) {
                 floats: { _Smoothness: 0.85 },
                 colors: { _BaseColor: [0.04, 0.12, 0.18, 0.7] },
             }),
+            // ---- stock URP Lit dispatch ('933532a4', the real URP Lit GUID).
+            // Hex texture guids (unlike T(n)) so binds and tiling actually run.
+            [M(17)]: matYaml('Urp_Full', {
+                shaderGuid: '933532a4fcc9baf4fa0491de14d08ed7',
+                keywords: ['_EMISSION'],
+                texEnvs: {
+                    _BaseMap: { guid: UT(1), scale: [2, 0.5], offset: [0.25, 0.1] },
+                    _BumpMap: UT(2),
+                    _MetallicGlossMap: UT(3),
+                    _OcclusionMap: UT(4),
+                    _EmissionMap: UT(5),
+                },
+                floats: { _Surface: 0, _AlphaClip: 0, _Cull: 2, _WorkflowMode: 1,
+                          _Metallic: 0.3, _Smoothness: 0.4, _BumpScale: 0.8, _OcclusionStrength: 0.9 },
+                colors: { _BaseColor: [0.7843137, 0.7843137, 0.7843137, 1], _EmissionColor: [2, 1, 0.5, 1] },
+            }),
+            [M(18)]: matYaml('Urp_CutoutSpec', {
+                shaderGuid: '933532a4fcc9baf4fa0491de14d08ed7',
+                keywords: ['_ALPHATEST_ON'],
+                renderType: 'TransparentCutout',
+                texEnvs: { _BaseMap: UT(1), _SpecGlossMap: UT(3) },
+                floats: { _Surface: 0, _AlphaClip: 1, _Cutoff: 0.35, _Cull: 0,
+                          _WorkflowMode: 0, _Metallic: 0.9, _Smoothness: 0.6 },
+                colors: { _BaseColor: [1, 1, 1, 1], _SpecColor: [0.2, 0.2, 0.2, 1] },
+            }),
+            [M(19)]: matYaml('Urp_Additive', {
+                shaderGuid: '933532a4fcc9baf4fa0491de14d08ed7',
+                keywords: ['_SURFACE_TYPE_TRANSPARENT'],
+                renderType: 'Transparent',
+                floats: { _Surface: 1, _Blend: 2, _Smoothness: 0.2 },
+                colors: { _BaseColor: [1, 0.5, 0.2, 0.6] },
+            }),
+            // Emission authored but the _EMISSION keyword is off: nothing may emit.
+            [M(20)]: matYaml('Urp_EmissionOff', {
+                shaderGuid: '933532a4fcc9baf4fa0491de14d08ed7',
+                texEnvs: { _BaseMap: UT(1), _EmissionMap: UT(5) },
+                floats: { _Surface: 0, _Metallic: 0, _Smoothness: 0.5 },
+                colors: { _BaseColor: [0.5, 0.5, 0.5, 1], _EmissionColor: [2, 1, 0.5, 1] },
+            }),
         };
         const sceneObjects = [
             meshObjectYaml(1000, 'FullProp', null, { matGuids: [M(1)] }),
@@ -1040,6 +1089,10 @@ export function buildCorpus(root) {
             meshObjectYaml(2300, 'AutoNamedProp', null, { matGuids: [M(14)] }),
             meshObjectYaml(2400, 'FireGlow', null, { builtinFileId: 10207, matGuids: [M(15)] }),
             meshObjectYaml(2500, 'DeadWindow', null, { matGuids: [M(16)] }),
+            meshObjectYaml(4000, 'UrpFullProp', null, { matGuids: [M(17)] }),
+            meshObjectYaml(4100, 'UrpCutout', null, { matGuids: [M(18)] }),
+            meshObjectYaml(4200, 'UrpAdditive', null, { builtinFileId: 10209, matGuids: [M(19)] }),
+            meshObjectYaml(4300, 'UrpDeadEmission', null, { matGuids: [M(20)] }),
             meshObjectYaml(2600, 'TwoMat', null, { matGuids: [M(1), M(3)] }),
             meshObjectYaml(2700, 'MissingMat', null, { matGuids: ['00000000000000000000000000nosuch'] }),
             meshObjectYaml(2800, 'Hidden', null, { inactive: true }),
