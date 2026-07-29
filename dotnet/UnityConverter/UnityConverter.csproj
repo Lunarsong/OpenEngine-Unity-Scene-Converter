@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- EditorHost's callback writer calls a raw native function pointer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>UnityConverter</AssemblyName>
+    <RootNamespace>GameEngine.UnityConverter</RootNamespace>
+    <!-- listScenes sorts by ICU collation to match the Node reference. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The shader-graph reader/mapping/emitter types are internal; the test
+         project drives them directly rather than through the CLI. -->
+    <InternalsVisibleTo Include="UnityConverter.Tests" />
+  </ItemGroup>
+
+  <!-- The bundled project-side surface shaders + shipped-hashes manifest are
+       embedded from the JS converter's shaders/ dir so both converters stage
+       byte-identical copies. One source of truth: that shaders/ dir. It sits at
+       the repo root in the standalone converter repo and under the synced JS
+       mirror (Tools/ai/unity-scene-convert/) in the engine embed; probe for
+       whichever layout holds this checkout so the project file itself stays
+       byte-identical in both. -->
+  <PropertyGroup>
+    <ConverterShadersDir Condition="Exists('..\..\shaders\shipped-hashes.json')">..\..\shaders</ConverterShadersDir>
+    <ConverterShadersDir Condition="'$(ConverterShadersDir)' == ''">..\..\Tools\ai\unity-scene-convert\shaders</ConverterShadersDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(ConverterShadersDir)\water_stylized.glsl" Link="shaders\water_stylized.glsl" LogicalName="shaders/water_stylized.glsl" />
+    <EmbeddedResource Include="$(ConverterShadersDir)\waterfall_fx.glsl" Link="shaders\waterfall_fx.glsl" LogicalName="shaders/waterfall_fx.glsl" />
+    <EmbeddedResource Include="$(ConverterShadersDir)\shipped-hashes.json" Link="shaders\shipped-hashes.json" LogicalName="shaders/shipped-hashes.json" />
+  </ItemGroup>
+</Project>

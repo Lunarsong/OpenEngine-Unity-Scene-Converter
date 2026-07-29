@@ -415,6 +415,28 @@ MeshRenderer.castShadows = true
 MeshRenderer.receiveShadows = true
 ```
 
+## C# converter (`dotnet/`)
+
+`dotnet/UnityConverter/` is a byte-parity C# port of the JS converter plus the
+Unity `.shadergraph` importer (reader, node mapping, SG v2 emitter, custom
+functions as `@sgnode` GLSL). It doubles as a standalone CLI
+(`dotnet run --project dotnet/UnityConverter -- <args>`, same argument surface
+as `unity-scene-convert`) and as the engine editor's in-process import-modal
+converter, hosted on the editor's CoreCLR runtime. Its bundled surface shaders
+are embedded from this repo's `shaders/` dir — the same files the JS converter
+stages — so both converters ship byte-identical copies.
+
+```
+dotnet build dotnet/UnityConverter                # CLI + editor-hosted assembly
+dotnet test  dotnet/UnityConverter.Tests         # shader-graph converter tests
+```
+
+One test, `NodeMap_EveryMappedPinExistsOnTheEngineSignature`, audits the node
+mapping table against the engine's live node GLSL signatures; it needs an
+engine checkout and is skipped in a standalone clone of this repo. Point
+`OPENENGINE_ENGINE_ROOT` at a GameEngine checkout to run it here; inside the
+engine tree it always runs.
+
 ## Development
 
 ```
@@ -427,10 +449,13 @@ Unity Editor content, no licensed asset-pack content, and no values recorded
 from licensed scenes (all numeric goldens are synthesized and hand-derived);
 contributions must keep it that way.
 
-**Phase 2 (planned):** the GameEngine repo currently carries its own copy of
-this converter (`Tools/ai/unity-scene-convert/`); a follow-up switches the
-engine to consume this package and deletes the in-repo copy. Until then this
-repo is the upstream — fixes land here first and are mirrored there.
+**Repository relationship:** this repo is the single authoring source for all
+converter code — the JS converter and the C# converter/shader-graph importer.
+The GameEngine repo embeds synced, never-hand-edited copies
+(`Tools/ai/unity-scene-convert/` for the JS package,
+`Managed/UnityConverter{,.Tests}/` for the C# projects), each pinned by a
+hash manifest and drift-guarded in engine CI. Fixes land here first and are
+synced there with the engine's `sync-from-upstream` tool.
 
 ## License
 
