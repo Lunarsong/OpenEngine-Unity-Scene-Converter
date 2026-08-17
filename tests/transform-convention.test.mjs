@@ -1,13 +1,8 @@
 // Regression guards for the Unity-scene converter's TRANSFORM CONVENTION.
 //
-// The engine renders R(conj(q_stored)) (Transform::FromTRS builds the transpose
-// of the standard quaternion->matrix basis; see Engine/Include/Components/
-// Transform.h). The converter therefore emits the CONJUGATE of every Unity
-// quaternion so FromTRS(conj(q)) == R(q): rendered orientation AND the
-// conj-dependent parent-offset composition both match Unity exactly. A stale or
-// wrong copy of convert.js (e.g. a terrain-branch checkout predating the
-// conjugation fix) silently mirrors rotations in the XZ plane. These tests fail
-// loudly if that regresses.
+// Engine FromTRS is LH: matrix * v == q.Rotate(v). The converter emits Unity
+// quaternions as-is (lh-v3). A stale conj-v2 copy silently mirrors rotations
+// in the XZ plane. These tests fail loudly if that regresses.
 //
 // Run:
 //   npm test                                        (from the package root)
@@ -46,8 +41,7 @@ function assertVec(actual, expected, msg, dp = DP) {
             `${msg} [${i}]: got ${actual[i]}, want ${expected[i]} (>${dp}dp)`);
 }
 
-// Standard column-major quaternion -> 3x3 rotation matrix (glm / Unity basis).
-// FromTRS(q) stores the TRANSPOSE of this, i.e. it equals rotMat3(conj(q)).
+// LH FromTRS / Unity / glm: column-major 3x3, matrix * v == q.Rotate(v).
 function rotMat3(q) {
     const [x, y, z, w] = q;
     const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -60,7 +54,6 @@ function rotMat3(q) {
         xz + wy, yz - wx, 1 - (xx + yy),   // col 2
     ];
 }
-// T * R(q) * S(scale), column-major 4x4.
 function mat4FromTRS(pos, q, scale) {
     const r = rotMat3(q);
     return [
@@ -70,11 +63,8 @@ function mat4FromTRS(pos, q, scale) {
         pos[0], pos[1], pos[2], 1,
     ];
 }
-// What the engine actually renders for a STORED quat: FromTRS(stored) == the
-// standard TRS built from conj(stored).
-const engineMat4 = (pos, stored, scale) => mat4FromTRS(pos, conj(stored), scale);
-// How the engine rotates a vector by a STORED quat: R(conj(stored)) * v.
-const engineRotate = (stored, v) => qRotate(conj(stored), v);
+const engineMat4 = (pos, stored, scale) => mat4FromTRS(pos, stored, scale);
+const engineRotate = (stored, v) => qRotate(stored, v);
 
 const yawY = (deg) => {
     const h = (deg * Math.PI / 180) / 2;
@@ -87,21 +77,18 @@ test('version constant is present and well-formed', () => {
     assert.ok(TRANSFORM_CONVENTION_VERSION.length > 0);
     // Encodes the engine convention this copy emits. If the convention changes,
     // this string MUST change with it (and the banner + these goldens updated).
-    assert.equal(TRANSFORM_CONVENTION_VERSION, 'conj-v2 (R(conj(q)) engine)');
+    assert.equal(TRANSFORM_CONVENTION_VERSION, 'lh-v3 (R(q) engine)');
 });
 
 // -------------------------------------------------- (a) object rotation ------
-test('object rotation: emitted quat == conj(unity local) to 6dp', () => {
+test('object rotation: emitted quat == unity local to 6dp', () => {
     // Synthesized compound rotation: yaw 45° then local pitch 30° —
     // qY(45°) ⊗ qX(30°), Hamilton, hand-derived independently of convert.js.
     // Unit-norm with all components distinct, so swizzles cannot self-cancel.
     const qUnity = [0.2391176, 0.3696438, -0.0990458, 0.8923991];
     const emitted = emitObjectQuat(qUnity);
-    assertVec(emitted, [-0.2391176, -0.3696438, 0.0990458, 0.8923991],
-        'emitObjectQuat != conj(qUnity)');
-    // And the engine's FromTRS(emitted) must reproduce the original Unity
-    // rotation basis (round-trip): rotMat3(conj(emitted)) == rotMat3(qUnity).
-    assertVec(rotMat3(conj(emitted)), rotMat3(qUnity), 'engine basis != Unity basis');
+    assertVec(emitted, qUnity, 'emitObjectQuat != qUnity');
+    assertVec(rotMat3(emitted), rotMat3(qUnity), 'engine basis != Unity basis');
 });
 
 // Two synthesized directional goldens (no scene-recorded values):
@@ -112,23 +99,22 @@ test('object rotation: emitted quat == conj(unity local) to 6dp', () => {
 //  - "fill": pitch 50° about X (Unity's default directional pitch), whose
 //    Y-flipped emit is a pure 180°-class quat (w == 0) — a shape a
 //    sign-convention bug cannot reproduce by accident.
-// Root directionals -> composed world rot == local; emitted = conj(worldRot * kYFlip).
+// Root directionals -> composed world rot == local; emitted = worldRot * kYFlip.
 // Expected values hand-derived independently of convert.js (own Hamilton
-// product + conj over the exact input literals), then hardcoded.
+// product over the exact input literals), then hardcoded.
 test('directional emit goldens (sun + fill) match hand-derived values to 6dp', () => {
     const sunSrc = [0.1913417, 0.8001031, -0.4619398, 0.3314136]; // qY(135°)⊗qX(60°)
     const fillSrc = [0.4226183, 0, 0, 0.9063078];                 // qX(50°)
-    // Feed through the exact emitted path: worldTRS of a root == its local rot.
     const sunWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: sunSrc, scale: [1, 1, 1] }]);
     const fillWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: fillSrc, scale: [1, 1, 1] }]);
     assertVec(emitDirectionalQuat(sunWorld.rot),
-        [-0.4619398, -0.3314136, -0.1913417, -0.8001031], 'sun directional emit');
+        [0.4619398, 0.3314136, 0.1913417, -0.8001031], 'sun directional emit');
     assertVec(emitDirectionalQuat(fillWorld.rot),
-        [0, -0.9063078, -0.4226183, 0], 'fill directional emit');
+        [0, 0.9063078, 0.4226183, 0], 'fill directional emit');
 });
 
 // -------------------------------------------- (b) parented composition -------
-test('parented position: conj emission reproduces Unity world offset', () => {
+test('parented position: identity emission reproduces Unity world offset', () => {
     // Parent yawed in Y, child offset in the XZ plane: a yaw about Y moves
     // points only within the XZ plane, so the conj-vs-non-conj residual is
     // confined to XZ (y == 0) — the exact signature this guard asserts below.
@@ -138,17 +124,13 @@ test('parented position: conj emission reproduces Unity world offset', () => {
     // Unity composes the child's world offset as R(parentRot) * childLocal.
     const unityOffset = qRotate(parentRot, childLocal);
 
-    // The converter emits conj(parentRot) as the parent's stored quat; the
-    // engine applies R(conj(stored)) to the offset. Round-trip must match Unity.
     const storedParent = emitObjectQuat(parentRot);
     const engineOffset = engineRotate(storedParent, childLocal);
-    assertVec(engineOffset, unityOffset, 'parented world offset (conj path)');
+    assertVec(engineOffset, unityOffset, 'parented world offset');
 
-    // Negative control: had the converter emitted the RAW (non-conjugated)
-    // quat, the engine would rotate the offset the WRONG way -> a non-zero
-    // residual confined to the XZ plane. This is the exact bug class the guard
-    // defends; assert the divergence exists and has the asserted shape (y==0).
-    const wrongOffset = engineRotate(parentRot, childLocal); // stored = raw (bug)
+    // Negative control: storing conj(q) under LH FromTRS rotates the offset
+    // the wrong way. Residual stays in XZ for a Y yaw.
+    const wrongOffset = engineRotate(conj(parentRot), childLocal);
     const residual = [
         unityOffset[0] - wrongOffset[0],
         unityOffset[1] - wrongOffset[1],
@@ -167,19 +149,12 @@ test('negative scale (mirror) round-trips to the same world matrix', () => {
     const qUnity = [0.2705981, 0.2705981, 0, 0.9238795]; // 45deg about (1,1,0)/sqrt2-ish
     const scale = [-1, 2, 3];
 
-    // Unity's world matrix.
     const unity = mat4FromTRS(pos, qUnity, scale);
-    // The converter emits conj(qUnity) and passes scale THROUGH unchanged; the
-    // engine's FromTRS reconstructs the same matrix.
     const stored = emitObjectQuat(qUnity);
     const engine = engineMat4(pos, stored, scale);
     assertVec(engine, unity, 'negative-scale world matrix round-trip');
 
-    // The mirror survives: determinant of the upper-3x3 is negative (odd number
-    // of negative scale axes). Documents that the converter does NOT normalize
-    // away the mirror (the editor's decomposition reset bug is downstream and
-    // out of scope for the converter).
-    const r = rotMat3(conj(stored));
+    const r = rotMat3(stored);
     const m = [
         r[0] * scale[0], r[1] * scale[0], r[2] * scale[0],
         r[3] * scale[1], r[4] * scale[1], r[5] * scale[1],
@@ -194,7 +169,7 @@ test('negative scale (mirror) round-trips to the same world matrix', () => {
 // ----------------------------------- end-to-end: run the real CLI -----------
 // Strongest wrong-copy guard: build a tiny self-contained Unity package
 // (builtin Cube primitive -> no FBX/assetdb needed), run convert.js as a child
-// process, and assert the emitted .scene carries the conjugated rotations,
+// process, and assert the emitted .scene carries Unity rotations as-is,
 // preserves negative scale, and that the startup banner names the convention.
 function buildFixture(dir) {
     const guid = '00000000000000000000000000abcdef';
@@ -282,7 +257,7 @@ function parseScene(text) {
 }
 const parseTuple = (s) => s.replace(/[()]/g, '').split(',').map(v => parseFloat(v.trim()));
 
-test('end-to-end: CLI emits conj rotation, preserves negative scale, prints banner', () => {
+test('end-to-end: CLI emits identity rotation, preserves negative scale, prints banner', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'convguard-'));
     try {
         const pkgDir = buildFixture(path.join(tmp, 'pkg'));
@@ -293,7 +268,7 @@ test('end-to-end: CLI emits conj rotation, preserves negative scale, prints bann
         assert.equal(res.status, 0, `convert.js exited ${res.status}\nstderr:\n${res.stderr}`);
 
         // Banner proves which converter ran.
-        assert.match(res.stderr, /transform-convention: conj-v2 \(R\(conj\(q\)\) engine\)/,
+        assert.match(res.stderr, /transform-convention: lh-v3 \(R\(q\) engine\)/,
             'startup banner missing from stderr');
 
         const entities = parseScene(fs.readFileSync(outFile, 'utf8'));
@@ -303,11 +278,10 @@ test('end-to-end: CLI emits conj rotation, preserves negative scale, prints bann
         const child = byName('ChildCube');
         assert.ok(parent && child, 'Parent/ChildCube entities not emitted');
 
-        // Object rotations are conjugated.
         assertVec(parseTuple(parent.props['Transform.rotation']),
-            [0, -0.258819, 0, 0.9659258], 'parent emitted rotation (conj)');
+            [0, 0.258819, 0, 0.9659258], 'parent emitted rotation');
         assertVec(parseTuple(child.props['Transform.rotation']),
-            [-0.3826834, 0, 0, 0.9238795], 'child emitted rotation (conj)');
+            [0.3826834, 0, 0, 0.9238795], 'child emitted rotation');
 
         // Negative scale preserved verbatim (mirror not normalized away).
         assertVec(parseTuple(child.props['Transform.scale']),
@@ -316,13 +290,11 @@ test('end-to-end: CLI emits conj rotation, preserves negative scale, prints bann
         assertVec(parseTuple(child.props['Transform.position']), [2, 0, 0], 'child local position');
         assert.equal(child.parent, parent.id, 'child must parent to Parent entity');
 
-        // Directional light emitted at top level with the hand-derived golden
-        // (conj(qSun ⊗ kYFlip), same derivation as the unit test above).
         const sun = entities.find(e => e.props['Light.type'] === '0');
         assert.ok(sun, 'directional light entity not emitted');
         assert.equal(sun.parent, null, 'directional light must be unparented (sun anchor)');
         assertVec(parseTuple(sun.props['Transform.rotation']),
-            [-0.4619398, -0.3314136, -0.1913417, -0.8001031], 'sun directional emitted rotation');
+            [0.4619398, 0.3314136, 0.1913417, -0.8001031], 'sun directional emitted rotation');
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }

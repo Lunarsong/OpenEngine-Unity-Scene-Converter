@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace GameEngine.UnityConverter;
 
 /// Scene emission — port of convert.js emitScene() and its module-level
-/// transform-convention primitives (conj-v2), the ambient floor emitter and
+/// transform-convention primitives (lh-v3), the ambient floor emitter and
 /// the faithful-skybox resolve.
 internal sealed class EmittedCounts
 {
@@ -40,7 +40,7 @@ internal sealed class SkyboxResolve
 
 internal static class Emitter
 {
-    public const string TransformConventionVersion = "conj-v2 (R(conj(q)) engine)";
+    public const string TransformConventionVersion = "lh-v3 (R(q) engine)";
 
     // ------------------------------------------------------- formatting ----
     public static string FmtF(double v)
@@ -73,8 +73,8 @@ internal static class Emitter
 
     public static readonly double[] kYFlip = [0, 1, 0, 0];
 
-    public static double[] EmitObjectQuat(double[] qUnity) => Conj(qUnity);
-    public static double[] EmitDirectionalQuat(double[] worldRot) => Conj(QMul(worldRot, kYFlip));
+    public static double[] EmitObjectQuat(double[] qUnity) => [qUnity[0], qUnity[1], qUnity[2], qUnity[3]];
+    public static double[] EmitDirectionalQuat(double[] worldRot) => QMul(worldRot, kYFlip);
 
     public sealed class WorldTrs
     {

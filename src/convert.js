@@ -1135,11 +1135,9 @@ function buildFileStructure(ctx, unityGuid, stack) {
         } else if (d.classId === '108') {
             // Unity LightType: 0=Spot 1=Directional 2=Point 3=Area 4=Disc.
             // v1 converts directional (sun) + point (torches); spot/area counted as skipped.
-            // A future spot branch must route its transform through the same
-            // conj(worldRot * kYFlip) the directional emitter uses: a spot shines
-            // along a direction, so both the -Z shine-vector convention and the
-            // FromTRS inverse-rotation apply. Emitting the raw world rotation would
-            // mirror its aim in the XZ plane, exactly the bug the directionals had.
+            // A future spot branch must route its transform through
+            // emitDirectionalQuat (worldRot * kYFlip). A spot shines along a
+            // direction; engine extraction reads -Z, Unity lights shine +Z.
             const uType = String(d.data.m_Type ?? '1');
             const node = nid && st.nodes.get(nid);
             if (node && (uType === '1' || uType === '2')) {
@@ -1410,30 +1408,17 @@ function fmtF(v) {
 }
 const fmt3 = (a) => `(${fmtF(a[0])}, ${fmtF(a[1])}, ${fmtF(a[2])})`;
 const fmt4 = (a) => `(${fmtF(a[0])}, ${fmtF(a[1])}, ${fmtF(a[2])}, ${fmtF(a[3])})`;
-// The engine composes a Transform's rotation matrix as the TRANSPOSE of the
-// standard quaternion->matrix (Transform::FromTRS), i.e. it renders R(q)^T =
-// R(q^-1): the CONJUGATE of the stored quaternion drives both orientation and
-// the rotation of child local offsets. The engine round-trips its own content
-// (write and read both conjugate), so it is self-consistent — but Unity stores
-// standard-convention quaternions. Emitting conj(q) = (-x,-y,-z,w) makes
-// FromTRS(conj(q)) = R(q), so parent-offset composition (q^-1 v q with the
-// conjugated q) and rendered orientation both match Unity exactly. Verified
-// numerically on a reference parent-child chain: with a small parent Y-yaw the
-// engine rotated the child offset by the OPPOSITE yaw, and the Unity-minus-
-// engine world position residual (confined to the XZ plane, y == 0) matched
-// the predicted conj-vs-non-conj divergence to 3 dp.
+// Both engines are LH, Y-up, Z+ forward. FromTRS is LH: matrix * v == q.Rotate(v).
+// Emit Unity quaternions as-is. conj() stays exported for tests that assert the
+// old "store conj(q)" path is the wrong class.
 const conj = (q) => [-q[0], -q[1], -q[2], q[3]];
 
-// ---- transform convention (see the FromTRS note above conj) --------------
-// The engine renders R(conj(q_stored)); the converter therefore emits the
-// CONJUGATE of every Unity quaternion so FromTRS(conj(q)) = R(q) and both the
-// rendered orientation and the conj-dependent parent-offset composition match
-// Unity exactly. These primitives are module-level (not emitScene closures) so
-// tests/transform-convention.test.mjs can exercise the exact emitted math and
-// fail loudly if a future edit -- or a stale copy of this file -- drops the
-// conjugation. Bump TRANSFORM_CONVENTION_VERSION (and the startup banner) on
-// any intentional change to the convention.
-const TRANSFORM_CONVENTION_VERSION = 'conj-v2 (R(conj(q)) engine)';
+// ---- transform convention ------------------------------------------------
+// lh-v3: FromTRS(q) == R(q). Object emit is identity. Directional emit is
+// worldRot * kYFlip only (Unity lights shine +Z; engine extraction reads -Z).
+// Bump TRANSFORM_CONVENTION_VERSION (and the startup banner) on any
+// intentional change to the convention.
+const TRANSFORM_CONVENTION_VERSION = 'lh-v3 (R(q) engine)';
 
 // Hamilton product (x,y,z,w arrays).
 const qMul = (a, b) => [
@@ -1454,13 +1439,10 @@ const qRotate = (q, v) => {
 // column). A 180-degree local-Y turn maps that -Z onto Unity's authored +Z.
 const kYFlip = [0, 1, 0, 0];
 
-// The rotation the converter STORES for a plain object: conj of the Unity
-// local quaternion, so the engine's R(conj(stored)) renders R(q_unity).
-const emitObjectQuat = (qUnity) => conj(qUnity);
-// The rotation the converter STORES for a directional light: the composed
-// world rotation, Y-flipped so -Z aligns to Unity forward, then conjugated
-// for the engine convention (kept in sync with the mesh path).
-const emitDirectionalQuat = (worldRot) => conj(qMul(worldRot, kYFlip));
+// Plain object: Unity local quaternion, unchanged.
+const emitObjectQuat = (qUnity) => qUnity.slice();
+// Directional: composed world rotation, Y-flipped so engine -Z matches Unity +Z.
+const emitDirectionalQuat = (worldRot) => qMul(worldRot, kYFlip);
 
 // Compose a root->leaf chain of local {pos,rot,scale} nodes into a world
 // {pos,rot,scl} (uniform-scale assumption is fine for light placement).
@@ -1713,18 +1695,8 @@ function emitScene(ctx, st, sceneName) {
         // Directional lights: emit at top level with composed world TRS — the
         // sky/environment system only binds an UNPARENTED directional as the
         // sun, and Unity scenes routinely nest lights under group objects.
-        // Object rotations are conjugated to the engine's quaternion convention
-        // (see conj above). The directional-light branch composes the world
-        // rotation here (worldTRS/qMul, from the unconjugated Unity locals) and
-        // then applies the SAME conjugation the mesh path uses: the engine's
-        // FromTRS renders R(conj(q)) and extracts a light's shine direction as
-        // conj(q)*(0,0,-1) (RenderExtractionSystem negates the world Z column).
-        // kYFlip (a 180-degree local-Y turn) maps that -Z onto Unity's authored
-        // +Z forward before the conjugation, so the emitted sun shines exactly
-        // along Unity's world forward. Verified numerically: engine shine dir vs
-        // Unity forward dot == 1.0 for both ElvenRealm directionals (the earlier
-        // unconjugated form left them ~59 and ~81 degrees off — Z matched but the
-        // XZ azimuth was mirrored).
+        // Object rotations pass through. Directional lights compose world TRS
+        // (unparented sun anchor) and apply kYFlip so engine -Z matches Unity +Z.
         let pos = n.pos, rot = emitObjectQuat(n.rot), scale = n.scale;
         let parentAttr = parentEntityId ? ` parent="${parentEntityId}"` : '';
         if (isDirLight) {

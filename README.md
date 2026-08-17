@@ -129,7 +129,7 @@ conv.conj(q); conv.qMul(a, b); conv.qRotate(q, v);
 conv.emitObjectQuat(qUnity);        // what gets written for an object rotation
 conv.emitDirectionalQuat(worldRot); // what gets written for a directional light
 conv.composeWorldTRS(chain);        // parent-chain TRS composition
-conv.TRANSFORM_CONVENTION_VERSION;  // 'conj-v2 (R(conj(q)) engine)'
+conv.TRANSFORM_CONVENTION_VERSION;  // 'lh-v3 (R(q) engine)'
 
 // Ambient colour space (see Environment):
 conv.srgbToLinear(x); conv.linearizeAmbientColor(rgb);
@@ -147,20 +147,22 @@ conv.buildWaterDoc(ctx, info, name); conv.buildFallsDoc(ctx, info, name);
 These are locked by golden regression tests (`npm test`); a stale or forked
 copy that regresses any of them fails loudly.
 
-### Quaternion convention (conj-v2)
+### Quaternion convention (lh-v3)
 
-The engine renders `R(conj(q_stored))` (its `Transform::FromTRS` builds the
-transpose of the standard quaternion→matrix basis). The converter therefore
-emits the **conjugate** of every Unity quaternion so
-`FromTRS(conj(q)) == R(q)`: rendered orientation AND the conj-dependent
-parent-offset composition both match Unity exactly. Every run prints a
-`transform-convention: conj-v2 (R(conj(q)) engine)` banner to stderr so any
-regeneration log proves which converter ran.
+Both engines are left-handed, Y-up, Z+ forward. Engine `FromTRS` is LH:
+`matrix * v == q.Rotate(v)`. The converter emits Unity quaternions **as-is**.
+Directional lights also apply a 180° local-Y (`kYFlip`) so Unity's +Z shine
+matches the engine's −Z extraction. Every run prints a
+`transform-convention: lh-v3 (R(q) engine)` banner to stderr.
 
-The guard tests cover: object rotations (conjugation to 6 dp), hand-derived
+Scenes written by conj-v2 stored `conj(q_unity)` to cancel the old inverse
+`FromTRS`. Those files must be re-imported after this convention; the
+workaround lived in the stored bytes.
+
+The guard tests cover: object rotations (identity emit to 6 dp), hand-derived
 directional-light emit goldens, parented composition round-trips (with a
-negative control for the raw/non-conjugated bug class), negative-scale
-(mirror) preservation, and an end-to-end CLI run over a synthetic fixture.
+negative control for the conjugated bug class), negative-scale (mirror)
+preservation, and an end-to-end CLI run over a synthetic fixture.
 
 ### Coordinate mapping
 
