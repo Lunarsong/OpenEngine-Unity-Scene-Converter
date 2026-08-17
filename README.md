@@ -129,7 +129,7 @@ conv.conj(q); conv.qMul(a, b); conv.qRotate(q, v);
 conv.emitObjectQuat(qUnity);        // what gets written for an object rotation
 conv.emitDirectionalQuat(worldRot); // what gets written for a directional light
 conv.composeWorldTRS(chain);        // parent-chain TRS composition
-conv.TRANSFORM_CONVENTION_VERSION;  // 'lh-v3 (R(q) engine)'
+conv.TRANSFORM_CONVENTION_VERSION;  // 'lh-v4 (R(q) engine, lights +Z)'
 
 // Ambient colour space (see Environment):
 conv.srgbToLinear(x); conv.linearizeAmbientColor(rgb);
@@ -147,13 +147,13 @@ conv.buildWaterDoc(ctx, info, name); conv.buildFallsDoc(ctx, info, name);
 These are locked by golden regression tests (`npm test`); a stale or forked
 copy that regresses any of them fails loudly.
 
-### Quaternion convention (lh-v3)
+### Quaternion convention (lh-v4)
 
 Both engines are left-handed, Y-up, Z+ forward. Engine `FromTRS` is LH:
-`matrix * v == q.Rotate(v)`. The converter emits Unity quaternions **as-is**.
-Directional lights also apply a 180° local-Y (`kYFlip`) so Unity's +Z shine
-matches the engine's −Z extraction. Every run prints a
-`transform-convention: lh-v3 (R(q) engine)` banner to stderr.
+`matrix * v == q.Rotate(v)`. Lights shine along entity **+Z** (same as Unity).
+The converter emits Unity quaternions **as-is** for objects and directionals.
+Every run prints a `transform-convention: lh-v4 (R(q) engine, lights +Z)`
+banner to stderr.
 
 Scenes written by conj-v2 stored `conj(q_unity)` to cancel the old inverse
 `FromTRS`. Those files must be re-imported after this convention; the

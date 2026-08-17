@@ -1136,8 +1136,8 @@ function buildFileStructure(ctx, unityGuid, stack) {
             // Unity LightType: 0=Spot 1=Directional 2=Point 3=Area 4=Disc.
             // v1 converts directional (sun) + point (torches); spot/area counted as skipped.
             // A future spot branch must route its transform through
-            // emitDirectionalQuat (worldRot * kYFlip). A spot shines along a
-            // direction; engine extraction reads -Z, Unity lights shine +Z.
+            // emitDirectionalQuat (world rotation as-is). A spot shines along
+            // +Z; engine extraction reads +Z. Same as Unity.
             const uType = String(d.data.m_Type ?? '1');
             const node = nid && st.nodes.get(nid);
             if (node && (uType === '1' || uType === '2')) {
@@ -1414,11 +1414,11 @@ const fmt4 = (a) => `(${fmtF(a[0])}, ${fmtF(a[1])}, ${fmtF(a[2])}, ${fmtF(a[3])}
 const conj = (q) => [-q[0], -q[1], -q[2], q[3]];
 
 // ---- transform convention ------------------------------------------------
-// lh-v3: FromTRS(q) == R(q). Object emit is identity. Directional emit is
-// worldRot * kYFlip only (Unity lights shine +Z; engine extraction reads -Z).
+// lh-v4: FromTRS(q) == R(q). Object and directional emit are identity.
+// Engine lights shine along +Z (entity forward), same as Unity.
 // Bump TRANSFORM_CONVENTION_VERSION (and the startup banner) on any
 // intentional change to the convention.
-const TRANSFORM_CONVENTION_VERSION = 'lh-v3 (R(q) engine)';
+const TRANSFORM_CONVENTION_VERSION = 'lh-v4 (R(q) engine, lights +Z)';
 
 // Hamilton product (x,y,z,w arrays).
 const qMul = (a, b) => [
@@ -1434,15 +1434,12 @@ const qRotate = (q, v) => {
     const uuvx = y * uvz - z * uvy, uuvy = z * uvx - x * uvz, uuvz = x * uvy - y * uvx;
     return [v[0] + 2 * (w * uvx + uuvx), v[1] + 2 * (w * uvy + uuvy), v[2] + 2 * (w * uvz + uuvz)];
 };
-// Unity directional/spot lights shine along +Z; the engine extracts light
-// direction as the entity's -Z (RenderExtractionSystem negates the world Z
-// column). A 180-degree local-Y turn maps that -Z onto Unity's authored +Z.
+// Kept for tests. Engine lights shine +Z; no Y-flip is applied on emit.
 const kYFlip = [0, 1, 0, 0];
 
-// Plain object: Unity local quaternion, unchanged.
+// Plain object and directional: Unity quaternion, unchanged.
 const emitObjectQuat = (qUnity) => qUnity.slice();
-// Directional: composed world rotation, Y-flipped so engine -Z matches Unity +Z.
-const emitDirectionalQuat = (worldRot) => qMul(worldRot, kYFlip);
+const emitDirectionalQuat = (worldRot) => worldRot.slice();
 
 // Compose a root->leaf chain of local {pos,rot,scale} nodes into a world
 // {pos,rot,scl} (uniform-scale assumption is fine for light placement).
@@ -1696,7 +1693,7 @@ function emitScene(ctx, st, sceneName) {
         // sky/environment system only binds an UNPARENTED directional as the
         // sun, and Unity scenes routinely nest lights under group objects.
         // Object rotations pass through. Directional lights compose world TRS
-        // (unparented sun anchor) and apply kYFlip so engine -Z matches Unity +Z.
+        // (unparented sun anchor). Shine is +Z, same as Unity.
         let pos = n.pos, rot = emitObjectQuat(n.rot), scale = n.scale;
         let parentAttr = parentEntityId ? ` parent="${parentEntityId}"` : '';
         if (isDirLight) {

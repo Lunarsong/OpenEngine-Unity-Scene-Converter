@@ -1,7 +1,7 @@
 // Regression guards for the Unity-scene converter's TRANSFORM CONVENTION.
 //
 // Engine FromTRS is LH: matrix * v == q.Rotate(v). The converter emits Unity
-// quaternions as-is (lh-v3). A stale conj-v2 copy silently mirrors rotations
+// quaternions as-is (lh-v4). A stale conj-v2 copy silently mirrors rotations
 // in the XZ plane. These tests fail loudly if that regresses.
 //
 // Run:
@@ -77,7 +77,7 @@ test('version constant is present and well-formed', () => {
     assert.ok(TRANSFORM_CONVENTION_VERSION.length > 0);
     // Encodes the engine convention this copy emits. If the convention changes,
     // this string MUST change with it (and the banner + these goldens updated).
-    assert.equal(TRANSFORM_CONVENTION_VERSION, 'lh-v3 (R(q) engine)');
+    assert.equal(TRANSFORM_CONVENTION_VERSION, 'lh-v4 (R(q) engine, lights +Z)');
 });
 
 // -------------------------------------------------- (a) object rotation ------
@@ -99,18 +99,14 @@ test('object rotation: emitted quat == unity local to 6dp', () => {
 //  - "fill": pitch 50° about X (Unity's default directional pitch), whose
 //    Y-flipped emit is a pure 180°-class quat (w == 0) — a shape a
 //    sign-convention bug cannot reproduce by accident.
-// Root directionals -> composed world rot == local; emitted = worldRot * kYFlip.
-// Expected values hand-derived independently of convert.js (own Hamilton
-// product over the exact input literals), then hardcoded.
+// Root directionals -> composed world rot == local; emitted = worldRot.
 test('directional emit goldens (sun + fill) match hand-derived values to 6dp', () => {
     const sunSrc = [0.1913417, 0.8001031, -0.4619398, 0.3314136]; // qY(135°)⊗qX(60°)
     const fillSrc = [0.4226183, 0, 0, 0.9063078];                 // qX(50°)
     const sunWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: sunSrc, scale: [1, 1, 1] }]);
     const fillWorld = composeWorldTRS([{ pos: [0, 0, 0], rot: fillSrc, scale: [1, 1, 1] }]);
-    assertVec(emitDirectionalQuat(sunWorld.rot),
-        [0.4619398, 0.3314136, 0.1913417, -0.8001031], 'sun directional emit');
-    assertVec(emitDirectionalQuat(fillWorld.rot),
-        [0, 0.9063078, 0.4226183, 0], 'fill directional emit');
+    assertVec(emitDirectionalQuat(sunWorld.rot), sunSrc, 'sun directional emit');
+    assertVec(emitDirectionalQuat(fillWorld.rot), fillSrc, 'fill directional emit');
 });
 
 // -------------------------------------------- (b) parented composition -------
@@ -268,7 +264,7 @@ test('end-to-end: CLI emits identity rotation, preserves negative scale, prints 
         assert.equal(res.status, 0, `convert.js exited ${res.status}\nstderr:\n${res.stderr}`);
 
         // Banner proves which converter ran.
-        assert.match(res.stderr, /transform-convention: lh-v3 \(R\(q\) engine\)/,
+        assert.match(res.stderr, /transform-convention: lh-v4 \(R\(q\) engine, lights \+Z\)/,
             'startup banner missing from stderr');
 
         const entities = parseScene(fs.readFileSync(outFile, 'utf8'));
@@ -294,7 +290,7 @@ test('end-to-end: CLI emits identity rotation, preserves negative scale, prints 
         assert.ok(sun, 'directional light entity not emitted');
         assert.equal(sun.parent, null, 'directional light must be unparented (sun anchor)');
         assertVec(parseTuple(sun.props['Transform.rotation']),
-            [0.4619398, 0.3314136, 0.1913417, -0.8001031], 'sun directional emitted rotation');
+            [0.1913417, 0.8001031, -0.4619398, 0.3314136], 'sun directional emitted rotation');
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }
