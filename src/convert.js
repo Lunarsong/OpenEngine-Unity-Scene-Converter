@@ -38,6 +38,7 @@ const { spawnSync } = require('child_process');
 const { parseUnityYaml } = require('./unityyaml');
 const skybox = require('./skybox');
 const unitypackage = require('./unitypackage');
+const { readUnityMesh, encodeGlb } = require('./unity-static-mesh');
 
 // ---------------------------------------------------------------- CLI ------
 function parseArgs(argv) {
@@ -221,7 +222,7 @@ function makeNode(name) {
         fatherAnchor: '0',    // anchor within owning file; resolved to .father later
         father: null,         // node id
         children: [],
-        meshFbxGuid: null,    // unity guid of the FBX providing the mesh
+        meshRef: null,        // source {guid, fileID}; fileID is always a string
         meshPrimitive: null,  // engine primitive name for Unity builtin meshes
         matCount: 1,          // material-part count; >1 => FBX loader split the mesh
                               // into <base>_0.._N-1 submeshes (one per material)
@@ -235,9 +236,26 @@ function makeNode(name) {
 }
 
 function cloneNode(n) {
-    const c = { ...n, pos: [...n.pos], rot: [...n.rot], scale: [...n.scale], matGuids: [...n.matGuids], children: [] };
+    const c = { ...n, meshRef: n.meshRef && { ...n.meshRef }, pos: [...n.pos], rot: [...n.rot], scale: [...n.scale], matGuids: [...n.matGuids], children: [] };
     c.id = 'n' + (++nodeCounter);
     return c;
+}
+
+function assignMeshReference(node, reference) {
+    node.meshRef = null;
+    node.meshPrimitive = null;
+    node.nonStaticFbx = false;
+    if (!reference || String(reference.fileID || '0') === '0') return;
+    const fileID = String(reference.fileID);
+    if (!/^-?\d+$/.test(fileID)) throw new Error(`Invalid MeshFilter fileID: ${fileID}`);
+    const guid = String(reference.guid || '').toLowerCase();
+    if (BUILTIN_GUIDS.has(guid) || !guid) {
+        if (BUILTIN_MESHES[fileID]) node.meshPrimitive = BUILTIN_MESHES[fileID];
+        else throw new Error(`Unsupported builtin MeshFilter reference: ${guid}/${fileID}`);
+    } else {
+        if (!/^[0-9a-f]{32}$/.test(guid)) throw new Error(`Invalid MeshFilter GUID: ${guid}`);
+        node.meshRef = { guid, fileID };
+    }
 }
 
 const asNum = (v, dflt) => {
@@ -930,7 +948,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
     if (ext === '.fbx') {
         const stem = path.basename(assetPath, path.extname(assetPath));
         const root = makeNode(stem);
-        root.meshFbxGuid = unityGuid;
+        root.meshRef = { guid: unityGuid, fileID: null };
         // Synty convention: SM_* = static mesh; anything else (Chr_, SK_,
         // FX_ ...) is character/FX content — out of scope for v1.
         root.nonStaticFbx = !/^sm_/i.test(stem);
@@ -938,6 +956,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
             isFbx: true,
             nodes: new Map([[root.id, root]]),
             anchorToNode: new Map(),
+            anchorTypes: new Map(),
             rootIds: [root.id],
         };
         // Split a multi-node prop into root + one child per extra mesh node so
@@ -966,7 +985,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
                 for (const sn of scan) {
                     if (sn === rootScan || kFbxAuxNodeRe.test(sn.name)) continue;
                     const child = makeNode(sn.name);
-                    child.meshFbxGuid = unityGuid;
+                    child.meshRef = { guid: unityGuid, fileID: null };
                     child.nonStaticFbx = false;
                     child.pos = [
                         -(sn.offset[0] - rootScan.offset[0]),
@@ -1030,6 +1049,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
         isFbx: false,
         nodes: new Map(),
         anchorToNode: new Map(), // transform/GO/renderer anchor -> node id
+        anchorTypes: new Map(),
         rootIds: [],
     };
 
@@ -1081,16 +1101,20 @@ function buildFileStructure(ctx, unityGuid, stack) {
         expandPrefabInstance(ctx, st, d, [...stack, unityGuid], strippedByInstance.get(d.anchor));
     }
 
-    // Pass 4: stripped transform/GO docs alias into expanded instance clones.
+    // Pass 4: stripped objects/components alias into expanded instance clones.
     for (const d of docs) {
-        if (!d.stripped || (d.classId !== '4' && d.classId !== '1')) continue;
+        if (!d.stripped || !['4', '1', '23', '33'].includes(d.classId)) continue;
         if (!d.data) continue;
         const instAnchor = d.data.m_PrefabInstance && d.data.m_PrefabInstance.fileID;
         const corr = d.data.m_CorrespondingSourceObject && d.data.m_CorrespondingSourceObject.fileID;
         const inst = st.instanceClones && st.instanceClones.get(instAnchor);
         if (!inst) continue;
+        if (String(d.data.m_CorrespondingSourceObject.guid || '').toLowerCase() !== inst.sourceGuid)
+            throw new Error(`Stripped object ${d.anchor} names a foreign source prefab`);
         const subNodeId = inst.sub.anchorToNode.get(corr);
-        const cloneId = subNodeId ? inst.map.get(subNodeId) : inst.rootCloneId;
+        const component = d.classId === '23' || d.classId === '33';
+        const cloneId = subNodeId ? inst.map.get(subNodeId)
+            : (!component || (inst.sub.isFbx && inst.sub.nodes.size === 1)) ? inst.rootCloneId : null;
         if (cloneId) st.anchorToNode.set(d.anchor, cloneId);
     }
 
@@ -1103,14 +1127,7 @@ function buildFileStructure(ctx, unityGuid, stack) {
             if (!nid) continue;
             const node = st.nodes.get(nid);
             if (!node) continue;
-            const mesh = d.data.m_Mesh || {};
-            if (mesh.guid && !BUILTIN_GUIDS.has(String(mesh.guid).toLowerCase())) {
-                node.meshFbxGuid = String(mesh.guid).toLowerCase();
-            } else if (BUILTIN_MESHES[mesh.fileID]) {
-                node.meshPrimitive = BUILTIN_MESHES[mesh.fileID];
-            } else if (mesh.fileID && mesh.fileID !== '0') {
-                stats.skippedBuiltinUnsupported++;
-            }
+            assignMeshReference(node, d.data.m_Mesh);
             st.anchorToNode.set(d.anchor, nid);
         } else if (d.classId === '23') {
             if (!nid) continue;
@@ -1170,6 +1187,10 @@ function buildFileStructure(ctx, unityGuid, stack) {
         else if (d.classId === '205') stats.lodGroups++;
     }
 
+    for (const d of docs)
+        if (st.anchorToNode.has(d.anchor)) st.anchorTypes.set(d.anchor, d.classId);
+    indexNestedComponentAliases(st, docs);
+
     // Pass 6: resolve father links.
     for (const node of st.nodes.values()) {
         if (node.father !== null) continue; // instance-internal links already set
@@ -1196,6 +1217,32 @@ const TRS_PROPS = new Set([
     'm_LocalRotation.x', 'm_LocalRotation.y', 'm_LocalRotation.z', 'm_LocalRotation.w',
     'm_LocalScale.x', 'm_LocalScale.y', 'm_LocalScale.z',
 ]);
+
+// Some prefab files serialize only their nested transform aliases; outer
+// variants still address the unlisted renderer/MeshFilter aliases. Admit the
+// legacy XOR namespace only when THIS instance's serialized aliases confirm
+// it. Other Unity ID schemes retain explicit aliases and fail unresolved mesh
+// overrides, rather than guessing that an unknown component is the root.
+function indexNestedComponentAliases(st, docs) {
+    const nestedId = (sourceId, instanceId) =>
+        ((BigInt(sourceId) ^ BigInt(instanceId)) & ((1n << 63n) - 1n)).toString();
+    for (const [instanceId, inst] of st.instanceClones || []) {
+        const refs = docs.filter(d => d.stripped && ['1', '4', '23', '33'].includes(d.classId)
+            && d.data?.m_PrefabInstance?.fileID === instanceId
+            && d.data?.m_CorrespondingSourceObject?.fileID);
+        if (!refs.length || refs.some(d => nestedId(d.data.m_CorrespondingSourceObject.fileID, instanceId) !== d.anchor))
+            continue;
+        for (const [anchor, type] of inst.sub.anchorTypes) {
+            if (type !== '23' && type !== '33') continue;
+            const alias = nestedId(anchor, instanceId), clone = inst.map.get(inst.sub.anchorToNode.get(anchor));
+            if (!clone) continue;
+            if (st.anchorToNode.has(alias) && st.anchorToNode.get(alias) !== clone)
+                throw new Error(`Ambiguous nested component identity ${alias} in instance ${instanceId}`);
+            st.anchorToNode.set(alias, clone);
+            st.anchorTypes.set(alias, type);
+        }
+    }
+}
 
 // Expand one PrefabInstance doc into `st` by cloning the source structure
 // and applying m_Modifications. Unknown mod targets (Unity's hash-computed
@@ -1236,6 +1283,26 @@ function expandPrefabInstance(ctx, st, doc, stack, strippedRefs) {
         if (c.father === null) c.father = rootCloneId; // orphan safety
     }
 
+    // Object references are not scalar properties. A missing/null replacement
+    // must clear the inherited mesh; an unsupported replacement must never
+    // silently render the inherited FBX in its place.
+    for (const m of mod.m_Modifications || []) {
+        if (m?.propertyPath !== 'm_Mesh') continue;
+        const target = m.target;
+        if (!target || String(target.guid || '').toLowerCase() !== srcGuid)
+            throw new Error(`Mesh override target is outside prefab ${srcGuid}`);
+        const sid = sub.anchorToNode.get(target.fileID);
+        const type = sub.anchorTypes.get(target.fileID);
+        let node = sid && type === '33' ? st.nodes.get(map.get(sid)) : null;
+        if (!node && sub.isFbx && sub.nodes.size === 1) node = rootClone;
+        if (!node) throw new Error(`Unresolved MeshFilter override ${srcGuid}/${target.fileID}`);
+        if (!m.objectReference || m.objectReference.fileID === undefined)
+            throw new Error(`Missing MeshFilter objectReference ${srcGuid}/${target.fileID}`);
+        assignMeshReference(node, m.objectReference);
+        if (node.meshRef && !ctx.pkg.has(node.meshRef.guid))
+            throw new Error(`Mesh replacement asset is missing from package: ${node.meshRef.guid}`);
+    }
+
     // Material overrides: recover m_Materials.Array.{size,data[k]} mods and bind
     // each to the specific renderer it targets. Unity computes the target as
     // {fileID: <renderer id in the source prefab>, guid: <source prefab guid>,
@@ -1263,6 +1330,10 @@ function expandPrefabInstance(ctx, st, doc, stack, strippedRefs) {
             const sz = /^m_Materials\.Array\.size$/.exec(m.propertyPath);
             const dm = /^m_Materials\.Array\.data\[(\d+)\]$/.exec(m.propertyPath);
             if (!sz && !dm) continue;
+            if (String(m.target.guid || '').toLowerCase() !== srcGuid) {
+                noteDropped('prefab.materialTarget', `Target ${m.target.guid}/${t} is outside source ${srcGuid}`, ctx.verbose);
+                continue;
+            }
             if (!matByTarget.has(t)) matByTarget.set(t, { size: 0, slots: new Map() });
             const rec = matByTarget.get(t);
             if (sz) rec.size = Math.max(rec.size, asNum(m.value, 0));
@@ -1278,28 +1349,29 @@ function expandPrefabInstance(ctx, st, doc, stack, strippedRefs) {
             const meshClones = [];
             for (const cid of map.values()) {
                 const c = st.nodes.get(cid);
-                if (c.meshFbxGuid || c.meshPrimitive) meshClones.push(c);
+                if (c.meshRef?.guid || c.meshPrimitive) meshClones.push(c);
             }
             // Fallback target for unresolved renderer ids: the sole mesh node
             // (single-mesh wrapper / direct FBX), else the root body of a
             // multi-node prop.
             const soleMeshClone = meshClones.length === 1 ? meshClones[0]
-                : (rootClone.meshFbxGuid ? rootClone : null);
+                : (rootClone.meshRef?.guid ? rootClone : null);
             const singleTarget = matByTarget.size === 1;
             for (const [t, rec] of matByTarget) {
                 materialSeenTargets.add(t);
                 const sid = sub.anchorToNode.get(t);
                 let node = sid ? st.nodes.get(map.get(sid)) : null;
-                if (node && !(node.meshFbxGuid || node.meshPrimitive)) node = null;
-                if (!node && singleTarget) node = soleMeshClone;
+                if (node && !(node.meshRef?.guid || node.meshPrimitive)) node = null;
+                if (!node && singleTarget && sub.isFbx) node = soleMeshClone;
                 if (!node) {
                     stats.droppedMaterialOverrides += [...rec.slots.values()].filter(Boolean).length;
+                    noteDropped('prefab.materialTarget', `Unresolved renderer ${srcGuid}/${t}`, ctx.verbose);
                     continue;
                 }
                 if (rec.size > node.matCount) node.matCount = rec.size;
                 // Overlay only the overridden slots; slots the mod leaves alone
                 // keep whatever the wrapper/FBX already supplied.
-                for (const [idx, g] of rec.slots) if (g) node.matGuids[idx] = g;
+                for (const [idx, g] of rec.slots) node.matGuids[idx] = g;
                 stats.materialOverridesBound += [...rec.slots.values()].filter(Boolean).length;
             }
         }
@@ -1320,7 +1392,7 @@ function expandPrefabInstance(ctx, st, doc, stack, strippedRefs) {
     // Apply modifications grouped by target fileID.
     const groups = new Map();
     for (const m of (mod.m_Modifications || [])) {
-        if (!m || !m.target) continue;
+        if (!m || !m.target || m.propertyPath === 'm_Mesh') continue;
         const t = m.target.fileID || '0';
         if (!groups.has(t)) groups.set(t, []);
         groups.get(t).push(m);
@@ -1376,7 +1448,7 @@ function expandPrefabInstance(ctx, st, doc, stack, strippedRefs) {
 
     // Register for stripped-doc alias resolution (pass 4 of the container).
     if (!st.instanceClones) st.instanceClones = new Map();
-    st.instanceClones.set(doc.anchor, { sub, map, rootCloneId });
+    st.instanceClones.set(doc.anchor, { sub, map, rootCloneId, sourceGuid: srcGuid });
 }
 
 function applyModification(node, prop, value) {
@@ -1617,7 +1689,7 @@ function emitScene(ctx, st, sceneName) {
 
     // keep = has a (convertible) mesh or light, or any descendant kept.
     const keepCache = new Map();
-    const isMeshNode = (n) => (n.meshFbxGuid && !n.skinned && !n.nonStaticFbx) || n.meshPrimitive;
+    const isMeshNode = (n) => (n.meshRef?.guid && !n.skinned && !n.nonStaticFbx) || n.meshPrimitive;
     const keep = (nid) => {
         if (keepCache.has(nid)) return keepCache.get(nid);
         const n = st.nodes.get(nid);
@@ -1627,8 +1699,8 @@ function emitScene(ctx, st, sceneName) {
             k = false;
         } else {
             k = isMeshNode(n) || !!n.light || n.children.some(keep);
-            if (n.meshFbxGuid && n.skinned) { /* counted at parse */ }
-            if (n.meshFbxGuid && n.nonStaticFbx && !n.skinned) stats.skippedNonStaticFbx++;
+            if (n.meshRef?.guid && n.skinned) { /* counted at parse */ }
+            if (n.meshRef?.guid && n.nonStaticFbx && !n.skinned) stats.skippedNonStaticFbx++;
         }
         keepCache.set(nid, k);
         return k;
@@ -1717,8 +1789,8 @@ function emitScene(ctx, st, sceneName) {
             emitMeshCommon(n);
             wasMesh = true;
         } else if (isMeshNode(n)) {
-            emitted.uniqueFbx.add(n.meshFbxGuid);
-            const ref = resolveMeshAsset(ctx, n.meshFbxGuid);
+            emitted.uniqueFbx.add(n.meshRef?.guid);
+            const ref = resolveMeshAsset(ctx, n.meshRef);
             if (ref) {
                 out.push(`MeshRenderer.meshAsset = [path="${ref.path}" guid="${ref.guid}"]`);
                 // Bind the specific submesh by source-node name. Unity references
@@ -1726,8 +1798,11 @@ function emitScene(ctx, st, sceneName) {
                 // multi-submesh models would otherwise all render submesh 0. The
                 // node name equals the engine's Mesh.Name; single-mesh models
                 // ignore it, so it is safe to always emit.
-                const mn = meshMatchName(n.name);
-                if (n.matCount > 1 && mn) {
+                const mn = ref.meshName || meshMatchName(n.name);
+                const partCount = ref.partCount ?? n.matCount;
+                if (ref.meshName && Array.from({ length: partCount }, (_, i) => n.matGuids[i]).some(g => !g))
+                    noteDropped('mesh.defaultMaterials', `${n.meshRef.guid}/${n.meshRef.fileID}: inherited renderer defaults unavailable; unassigned slots retain GLB placeholders`, ctx.verbose);
+                if ((partCount > 1 || ref.meshName) && mn) {
                     // Multi-material node: the FBX loader split it into <base>_0..
                     // <base>_{N-1}. A MeshRenderer binds ONE submesh, so bind part 0
                     // here (its submesh is named <base>_0, not the bare <base>) and
@@ -1740,14 +1815,14 @@ function emitScene(ctx, st, sceneName) {
                 emitMeshCommon(n, emitMaterialRef(n, 0));
                 if (ref.seeded) {
                     emitted.seededMeshes++;
-                    emitted.seededFbxStems.add(fbxStem(ctx, n.meshFbxGuid));
+                    emitted.seededFbxStems.add(fbxStem(ctx, n.meshRef?.guid));
                 } else {
                     emitted.resolvedMeshes++;
                 }
                 wasMesh = true;
             } else {
-                const stem = fbxStem(ctx, n.meshFbxGuid);
-                out.push(`; UNRESOLVED mesh asset: ${stem}.fbx (unity guid ${n.meshFbxGuid})`);
+                const stem = fbxStem(ctx, n.meshRef?.guid);
+                out.push(`; UNRESOLVED mesh asset: ${stem}.fbx (unity guid ${n.meshRef?.guid})`);
                 emitted.unresolvedMeshes++;
                 emitted.unresolvedFbxStems.add(stem);
             }
@@ -1836,7 +1911,7 @@ function emitScene(ctx, st, sceneName) {
         // transform (co-located) and inherit its render flags; each binds one
         // submesh by its <base>_<k> name.
         if (meshRef && meshBase) {
-            for (let k = 1; k < n.matCount; ++k) {
+            for (let k = 1; k < (meshRef.partCount ?? n.matCount); ++k) {
                 const peid = 'e_' + (++idCounter);
                 out.push(`[entity id="${peid}" parent="${eid}"]`);
                 out.push(`Name.value = "${sanitizeName(n.name || 'Unnamed')} [mat ${k}]"`);
@@ -2366,7 +2441,35 @@ function fbxStem(ctx, unityGuid) {
 }
 
 const meshRefCache = new Map();
-function resolveMeshAsset(ctx, unityFbxGuid) {
+function resolveSerializedMesh(ctx, source, entry) {
+    if (path.extname(entry.assetPath).toLowerCase() !== '.asset')
+        throw new Error(`Unsupported MeshFilter asset: ${entry.assetPath} (${source.fileID})`);
+    if (!source.fileID) throw new Error(`Serialized Mesh reference has no fileID: ${source.guid}`);
+    const cache = ctx.serializedMeshes ||= new Map();
+    const key = `${source.guid}/${source.fileID}`;
+    if (cache.has(key)) return cache.get(key);
+    const mesh = readUnityMesh(fs.readFileSync(path.join(entry.dir, 'asset'), 'utf8'), source.fileID);
+    if (!ctx.modelSeedDir) throw new Error('Serialized Unity Mesh conversion requires --project');
+    const relative = `SerializedMeshes/${source.guid}/${source.fileID}.glb`;
+    const meshName = sanitizeName(mesh.rootMeshName) || 'UnityMesh';
+    const dest = path.join(ctx.modelSeedDir, relative), data = encodeGlb({ ...mesh, name: meshName });
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (!fs.existsSync(dest) || !fs.readFileSync(dest).equals(data)) fs.writeFileSync(dest, data);
+    if (mesh.repairedTangentVertices.length)
+        warn(`${entry.assetPath}: repaired undefined tangents at vertices ${mesh.repairedTangentVertices.join(', ')}`, ctx.verbose);
+    recordOutput(ctx, dest, 'model');
+    const ref = { guid: '', path: `${kModelSeedRel}/${relative}`, seeded: true,
+        meshName, partCount: mesh.submeshCount };
+    progressItem('models', ref.path);
+    cache.set(key, ref);
+    return ref;
+}
+
+function resolveMeshAsset(ctx, source) {
+    const unityFbxGuid = source.guid;
+    const entry = ctx.pkg.get(unityFbxGuid);
+    if (entry && path.extname(entry.assetPath).toLowerCase() !== '.fbx')
+        return resolveSerializedMesh(ctx, source, entry);
     if (meshRefCache.has(unityFbxGuid)) return meshRefCache.get(unityFbxGuid);
     let ref = null;
     if (ctx.assetDb) {
@@ -3774,6 +3877,8 @@ module.exports = {
     classifyMaterial, buildTriplanarDoc, buildMaterialDoc, buildWaterDoc, buildFallsDoc, parseUnityMat,
     // Surface-shader refresh (exercised by tests/surface-shader-refresh.test.mjs).
     ensureSurfaceShaderCopied, classifySurfaceShaderDest, hashShaderText,
+    // Prefab reference and native-model regression coverage.
+    buildPackageIndex, buildFileStructure, emitScene, resolveMeshAsset,
     // Transform convention (exercised by tests/transform-convention.test.mjs).
     TRANSFORM_CONVENTION_VERSION,
     conj, qMul, qRotate, kYFlip, emitObjectQuat, emitDirectionalQuat, composeWorldTRS,

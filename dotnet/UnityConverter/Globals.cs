@@ -129,4 +129,6 @@ internal sealed class AssetRef
     public required string Guid;
     public required string Path;
     public bool Seeded;
+    public string? MeshName;
+    public int? PartCount;
 }

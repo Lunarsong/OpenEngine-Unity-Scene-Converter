@@ -1,5 +1,8 @@
 namespace GameEngine.UnityConverter;
 
+// File IDs stay strings: Unity's serialized IDs can exceed double precision.
+internal sealed record MeshReference(string Guid, string? FileId);
+
 internal sealed class LightInfo
 {
     public required string Type; // "directional" | "point"
@@ -25,7 +28,7 @@ internal sealed class SceneNode
     public string FatherAnchor = "0";
     public string? Father;
     public List<string> Children = [];
-    public string? MeshFbxGuid;
+    public MeshReference? MeshRef;
     public string? MeshPrimitive;
     public double MatCount = 1;
     public List<string?> MatGuids = [];
@@ -56,7 +59,7 @@ internal sealed class SceneNode
             FatherAnchor = FatherAnchor,
             Father = Father,
             Children = [],
-            MeshFbxGuid = MeshFbxGuid,
+            MeshRef = MeshRef,
             MeshPrimitive = MeshPrimitive,
             MatCount = MatCount,
             MatGuids = [.. MatGuids],
@@ -89,6 +92,7 @@ internal sealed class FileStructure
     public readonly List<string> NodeOrder = [];
     public readonly Dictionary<string, SceneNode> NodesById = [];
     public readonly Dictionary<string, string> AnchorToNode = [];
+    public readonly Dictionary<string, string> AnchorTypes = [];
     public readonly List<string> RootIds = [];
     public Dictionary<string, InstanceClone>? InstanceClones;
 
@@ -110,6 +114,7 @@ internal sealed class FileStructure
 
 internal sealed class InstanceClone
 {
+    public required string SourceGuid;
     public required FileStructure Sub;
     public required Dictionary<string, string> Map; // sub node id -> clone id
     public required string RootCloneId;

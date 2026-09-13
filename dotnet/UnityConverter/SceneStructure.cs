@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Numerics;
 
 namespace GameEngine.UnityConverter;
 
@@ -18,6 +19,27 @@ internal static class SceneStructure
     };
     public static readonly HashSet<string> kBuiltinGuids =
         ["0000000000000000e000000000000000", "0000000000000000f000000000000000"];
+
+    internal static void AssignMeshReference(SceneNode node, YamlMap? reference)
+    {
+        node.MeshRef = null;
+        node.MeshPrimitive = null;
+        node.NonStaticFbx = false;
+        string fileId = OrDefaultString(reference?["fileID"], "0");
+        if (fileId is "" or "0") return;
+        if (!Regex.IsMatch(fileId, @"^-?[0-9]+$")) throw new InvalidDataException($"Invalid MeshFilter fileID: {fileId}");
+        string guid = OrDefaultString(reference?["guid"], "").ToLowerInvariant();
+        if (guid == "" || kBuiltinGuids.Contains(guid))
+        {
+            if (!kBuiltinMeshes.TryGetValue(fileId, out string? primitive)) throw new InvalidDataException($"Unsupported builtin MeshFilter reference: {guid}/{fileId}");
+            node.MeshPrimitive = primitive;
+        }
+        else
+        {
+            if (!Regex.IsMatch(guid, "^[0-9a-f]{32}$")) throw new InvalidDataException($"Invalid MeshFilter GUID: {guid}");
+            node.MeshRef = new MeshReference(guid, fileId);
+        }
+    }
 
     public static double AsNum(object? v, double dflt)
     {
@@ -100,7 +122,7 @@ internal static class SceneStructure
         {
             string stem = Js.PathBasename(assetPath, Js.PathExtname(assetPath));
             SceneNode root = SceneNode.Make(stem);
-            root.MeshFbxGuid = unityGuid;
+            root.MeshRef = new MeshReference(unityGuid, null);
             root.NonStaticFbx = !kSmStemRe.IsMatch(stem);
             var fbxSt = new FileStructure { IsFbx = true };
             fbxSt.Add(root);
@@ -121,7 +143,7 @@ internal static class SceneStructure
                     {
                         if (sn == rootScan || FbxScanner.kFbxAuxNodeRe.IsMatch(sn.Name)) continue;
                         SceneNode child = SceneNode.Make(sn.Name);
-                        child.MeshFbxGuid = unityGuid;
+                        child.MeshRef = new MeshReference(unityGuid, null);
                         child.NonStaticFbx = false;
                         child.Pos =
                         [
@@ -247,17 +269,21 @@ internal static class SceneStructure
             ExpandPrefabInstance(ctx, st, d, newStack, refs);
         }
 
-        // Pass 4: stripped transform/GO docs alias into expanded instance clones.
+        // Pass 4: stripped objects/components alias into expanded instance clones.
         foreach (UnityYamlDoc d in docs)
         {
-            if (!d.Stripped || (d.ClassId != "4" && d.ClassId != "1")) continue;
+            if (!d.Stripped || d.ClassId is not ("4" or "1" or "23" or "33")) continue;
             if (d.Data == null) continue;
             string? instAnchor = d.Data.Map("m_PrefabInstance")?.Str("fileID");
             string? corr = d.Data.Map("m_CorrespondingSourceObject")?.Str("fileID");
             InstanceClone? inst = instAnchor != null ? st.InstanceClones?.GetValueOrDefault(instAnchor) : null;
             if (inst == null) continue;
+            if (d.Data.Map("m_CorrespondingSourceObject")?.Str("guid")?.ToLowerInvariant() != inst.SourceGuid)
+                throw new InvalidDataException($"Stripped object {d.Anchor} names a foreign source prefab");
             string? subNodeId = corr != null ? inst.Sub.AnchorToNode.GetValueOrDefault(corr) : null;
-            string? cloneId = subNodeId != null ? inst.Map.GetValueOrDefault(subNodeId) : inst.RootCloneId;
+            bool component = d.ClassId is "23" or "33";
+            string? cloneId = subNodeId != null ? inst.Map.GetValueOrDefault(subNodeId)
+                : !component || (inst.Sub.IsFbx && inst.Sub.Count == 1) ? inst.RootCloneId : null;
             if (cloneId != null) st.AnchorToNode[d.Anchor] = cloneId;
         }
 
@@ -272,21 +298,7 @@ internal static class SceneStructure
                 if (nid == null) continue;
                 SceneNode? node = st.TryGet(nid);
                 if (node == null) continue;
-                YamlMap mesh = d.Data.Map("m_Mesh") ?? new YamlMap();
-                string? meshGuid = mesh.Str("guid");
-                string? meshFileId = mesh.Str("fileID");
-                if (!string.IsNullOrEmpty(meshGuid) && !kBuiltinGuids.Contains(Js.ToJsString(meshGuid).ToLowerInvariant()))
-                {
-                    node.MeshFbxGuid = Js.ToJsString(meshGuid).ToLowerInvariant();
-                }
-                else if (meshFileId != null && kBuiltinMeshes.TryGetValue(meshFileId, out string? prim))
-                {
-                    node.MeshPrimitive = prim;
-                }
-                else if (!string.IsNullOrEmpty(meshFileId) && meshFileId != "0")
-                {
-                    G.Stats.SkippedBuiltinUnsupported++;
-                }
+                AssignMeshReference(node, d.Data.Map("m_Mesh"));
                 st.AnchorToNode[d.Anchor] = nid;
             }
             else if (d.ClassId == "23")
@@ -367,6 +379,10 @@ internal static class SceneStructure
             }
         }
 
+        foreach (UnityYamlDoc d in docs)
+            if (st.AnchorToNode.ContainsKey(d.Anchor)) st.AnchorTypes[d.Anchor] = d.ClassId;
+        IndexNestedComponentAliases(st, docs);
+
         // Pass 6: resolve father links.
         foreach (SceneNode node in st.Nodes())
         {
@@ -421,6 +437,32 @@ internal static class SceneStructure
         "m_LocalScale.x", "m_LocalScale.y", "m_LocalScale.z",
     ];
 
+    private static void IndexNestedComponentAliases(FileStructure st, List<UnityYamlDoc> docs)
+    {
+        static string NestedId(string source, string instance) =>
+            ((BigInteger.Parse(source) ^ BigInteger.Parse(instance)) & ((BigInteger.One << 63) - 1)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (st.InstanceClones == null) return;
+        foreach (var (instanceId, instance) in st.InstanceClones)
+        {
+            var refs = docs.Where(d => d.Stripped && d.ClassId is "1" or "4" or "23" or "33" && d.Data?.Map("m_PrefabInstance")?.Str("fileID") == instanceId &&
+                d.Data.Map("m_CorrespondingSourceObject")?.Str("fileID") != null).ToList();
+            if (refs.Count == 0 || refs.Any(d => d.Data!.Map("m_CorrespondingSourceObject")?.Str("guid")?.ToLowerInvariant() != instance.SourceGuid ||
+                NestedId(d.Data.Map("m_CorrespondingSourceObject")!.Str("fileID")!, instanceId) != d.Anchor)) continue;
+            foreach (var (anchor, type) in instance.Sub.AnchorTypes)
+            {
+                if (type is not ("23" or "33")) continue;
+                string alias = NestedId(anchor, instanceId);
+                string? sourceNode = instance.Sub.AnchorToNode.GetValueOrDefault(anchor);
+                string? clone = sourceNode != null ? instance.Map.GetValueOrDefault(sourceNode) : null;
+                if (clone == null) continue;
+                if (st.AnchorToNode.TryGetValue(alias, out string? prior) && prior != clone)
+                    throw new InvalidDataException($"Ambiguous nested component identity {alias} in instance {instanceId}");
+                st.AnchorToNode[alias] = clone;
+                st.AnchorTypes[alias] = type;
+            }
+        }
+    }
+
     private static readonly HashSet<string> kNameish =
     [
         "m_Name", "m_TagString", "m_Layer", "m_StaticEditorFlags", "m_RootOrder",
@@ -435,9 +477,11 @@ internal static class SceneStructure
     {
         public bool TargetPresent;   // JS truthiness of m.target
         public string? Target;       // m.target.fileID
+        public string? TargetGuid;
         public string? PropertyPath;
         public object? Value;
         public string? ObjectRefGuid;
+        public YamlMap? ObjectReference;
     }
 
     // JS: `!m.target` — falsy when absent, null, or empty string.
@@ -504,11 +548,30 @@ internal static class SceneStructure
                     TargetPresent = target is YamlMap || target is YamlList
                         || (target is string ts && ts.Length > 0),
                     Target = (target as YamlMap)?.Str("fileID"),
+                    TargetGuid = (target as YamlMap)?.Str("guid"),
                     PropertyPath = m.Str("propertyPath"),
                     Value = m["value"],
                     ObjectRefGuid = m.Map("objectReference")?.Str("guid"),
+                    ObjectReference = m.Map("objectReference"),
                 });
             }
+        }
+
+        foreach (Modification m in mods)
+        {
+            if (m.PropertyPath != "m_Mesh") continue;
+            if (!m.TargetPresent || m.TargetGuid?.ToLowerInvariant() != srcGuid)
+                throw new InvalidDataException($"Mesh override target is outside prefab {srcGuid}");
+            string? sid = m.Target != null ? sub.AnchorToNode.GetValueOrDefault(m.Target) : null;
+            string? type = m.Target != null ? sub.AnchorTypes.GetValueOrDefault(m.Target) : null;
+            SceneNode? node = sid != null && type == "33" ? st.TryGet(map.GetValueOrDefault(sid)) : null;
+            if (node == null && sub.IsFbx && sub.Count == 1) node = rootClone;
+            if (node == null) throw new InvalidDataException($"Unresolved MeshFilter override {srcGuid}/{m.Target}");
+            if (m.ObjectReference == null || !m.ObjectReference.Has("fileID"))
+                throw new InvalidDataException($"Missing MeshFilter objectReference {srcGuid}/{m.Target}");
+            AssignMeshReference(node, m.ObjectReference);
+            if (node.MeshRef is { } replacement && ctx.PkgGet(replacement.Guid) == null)
+                throw new InvalidDataException($"Mesh replacement asset is missing from package: {replacement.Guid}");
         }
 
         // Material overrides: recover m_Materials.Array mods per renderer target.
@@ -523,6 +586,11 @@ internal static class SceneStructure
                 Match sz = kMatSizeRe.Match(m.PropertyPath!);
                 Match dm = kMatDataRe.Match(m.PropertyPath!);
                 if (!sz.Success && !dm.Success) continue;
+                if (m.TargetGuid?.ToLowerInvariant() != srcGuid)
+                {
+                    G.NoteDropped("prefab.materialTarget", $"Target {m.TargetGuid}/{t} is outside source {srcGuid}", ctx.Verbose);
+                    continue;
+                }
                 if (!matByTarget.TryGetValue(t, out (double Size, Dictionary<int, string?> Slots) rec))
                 {
                     rec = (0, []);
@@ -547,10 +615,10 @@ internal static class SceneStructure
                 foreach (string cid in map.Values)
                 {
                     SceneNode c = st.Get(cid);
-                    if (c.MeshFbxGuid != null || c.MeshPrimitive != null) meshClones.Add(c);
+                    if (c.MeshRef != null || c.MeshPrimitive != null) meshClones.Add(c);
                 }
                 SceneNode? soleMeshClone = meshClones.Count == 1 ? meshClones[0]
-                    : (rootClone.MeshFbxGuid != null ? rootClone : null);
+                    : (rootClone.MeshRef != null ? rootClone : null);
                 bool singleTarget = matTargetOrder.Count == 1;
                 foreach (string t in matTargetOrder)
                 {
@@ -558,16 +626,17 @@ internal static class SceneStructure
                     materialSeenTargets.Add(t);
                     string? sid = sub.AnchorToNode.GetValueOrDefault(t);
                     SceneNode? node = sid != null ? st.TryGet(map.GetValueOrDefault(sid)) : null;
-                    if (node != null && node.MeshFbxGuid == null && node.MeshPrimitive == null) node = null;
-                    if (node == null && singleTarget) node = soleMeshClone;
+                    if (node != null && node.MeshRef == null && node.MeshPrimitive == null) node = null;
+                    if (node == null && singleTarget && sub.IsFbx) node = soleMeshClone;
                     if (node == null)
                     {
                         G.Stats.DroppedMaterialOverrides += rec.Slots.Values.Count(v => v != null);
+                        G.NoteDropped("prefab.materialTarget", $"Unresolved renderer {srcGuid}/{t}", ctx.Verbose);
                         continue;
                     }
                     if (rec.Size > node.MatCount) node.MatCount = rec.Size;
                     foreach ((int idx, string? g) in rec.Slots)
-                        if (g != null) node.SetMatGuid(idx, g);
+                        node.SetMatGuid(idx, g);
                     G.Stats.MaterialOverridesBound += rec.Slots.Values.Count(v => v != null);
                 }
             }
@@ -588,7 +657,7 @@ internal static class SceneStructure
         var groupOrder = new List<string>();
         foreach (Modification m in mods)
         {
-            if (!HasTarget(m)) continue;
+            if (!HasTarget(m) || m.PropertyPath == "m_Mesh") continue;
             string t = string.IsNullOrEmpty(m.Target) ? "0" : m.Target!;
             if (!groups.TryGetValue(t, out List<Modification>? list))
             {
@@ -663,7 +732,7 @@ internal static class SceneStructure
         }
 
         st.InstanceClones ??= [];
-        st.InstanceClones[doc.Anchor] = new InstanceClone { Sub = sub, Map = map, RootCloneId = rootCloneId };
+        st.InstanceClones[doc.Anchor] = new InstanceClone { SourceGuid = srcGuid!, Sub = sub, Map = map, RootCloneId = rootCloneId };
     }
 
     public static void ApplyModification(SceneNode node, string? prop, object? value)

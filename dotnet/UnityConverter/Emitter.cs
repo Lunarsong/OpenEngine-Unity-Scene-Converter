@@ -286,7 +286,7 @@ internal static class Emitter
         var emitted = new EmittedCounts();
 
         var keepCache = new Dictionary<string, bool>();
-        bool IsMeshNode(SceneNode n) => (n.MeshFbxGuid != null && !n.Skinned && !n.NonStaticFbx) || n.MeshPrimitive != null;
+        bool IsMeshNode(SceneNode n) => (n.MeshRef != null && !n.Skinned && !n.NonStaticFbx) || n.MeshPrimitive != null;
 
         void CountSubtreeSkips(string nid)
         {
@@ -308,11 +308,11 @@ internal static class Emitter
             else
             {
                 k = IsMeshNode(n) || n.Light != null || n.Children.Any(Keep);
-                if (n.MeshFbxGuid != null && n.Skinned)
+                if (n.MeshRef != null && n.Skinned)
                 {
                     // counted at parse
                 }
-                if (n.MeshFbxGuid != null && n.NonStaticFbx && !n.Skinned) G.Stats.SkippedNonStaticFbx++;
+                if (n.MeshRef != null && n.NonStaticFbx && !n.Skinned) G.Stats.SkippedNonStaticFbx++;
             }
             keepCache[nid] = k;
             return k;
@@ -418,13 +418,16 @@ internal static class Emitter
             }
             else if (IsMeshNode(n))
             {
-                emitted.UniqueFbx.Add(n.MeshFbxGuid!);
-                AssetRef? refAsset = Resolvers.ResolveMeshAsset(ctx, n.MeshFbxGuid!);
+                emitted.UniqueFbx.Add(n.MeshRef!.Guid);
+                AssetRef? refAsset = Resolvers.ResolveMeshAsset(ctx, n.MeshRef);
                 if (refAsset != null)
                 {
                     output.Add($"MeshRenderer.meshAsset = [path=\"{refAsset.Path}\" guid=\"{refAsset.Guid}\"]");
-                    string mn = MeshMatchName(n.Name);
-                    if (n.MatCount > 1 && mn.Length > 0)
+                    string mn = refAsset.MeshName ?? MeshMatchName(n.Name);
+                    double partCount = refAsset.PartCount ?? n.MatCount;
+                    if (refAsset.MeshName != null && Enumerable.Range(0, (int)partCount).Any(i => string.IsNullOrEmpty(n.GetMatGuid(i))))
+                        G.NoteDropped("mesh.defaultMaterials", $"{n.MeshRef.Guid}/{n.MeshRef.FileId}: inherited renderer defaults unavailable; unassigned slots retain GLB placeholders", ctx.Verbose);
+                    if ((partCount > 1 || refAsset.MeshName != null) && mn.Length > 0)
                     {
                         output.Add($"MeshRenderer.meshName = \"{mn}_0\"");
                         meshRef = refAsset;
@@ -438,7 +441,7 @@ internal static class Emitter
                     if (refAsset.Seeded)
                     {
                         emitted.SeededMeshes++;
-                        emitted.SeededFbxStems.Add(Resolvers.FbxStem(ctx, n.MeshFbxGuid!));
+                        emitted.SeededFbxStems.Add(Resolvers.FbxStem(ctx, n.MeshRef.Guid));
                     }
                     else
                     {
@@ -448,8 +451,8 @@ internal static class Emitter
                 }
                 else
                 {
-                    string stem = Resolvers.FbxStem(ctx, n.MeshFbxGuid!);
-                    output.Add($"; UNRESOLVED mesh asset: {stem}.fbx (unity guid {n.MeshFbxGuid})");
+                    string stem = Resolvers.FbxStem(ctx, n.MeshRef.Guid);
+                    output.Add($"; UNRESOLVED mesh asset: {stem}.fbx (unity guid {n.MeshRef.Guid})");
                     emitted.UnresolvedMeshes++;
                     emitted.UnresolvedFbxStems.Add(stem);
                 }
@@ -492,7 +495,7 @@ internal static class Emitter
             output.Add("");
             if (meshRef != null && meshBase != null)
             {
-                for (int k = 1; k < n.MatCount; ++k)
+                for (int k = 1; k < (meshRef.PartCount ?? n.MatCount); ++k)
                 {
                     string peid = "e_" + (++idCounter);
                     output.Add($"[entity id=\"{peid}\" parent=\"{eid}\"]");

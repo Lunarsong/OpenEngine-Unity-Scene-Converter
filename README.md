@@ -86,7 +86,7 @@ unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 - `--no-copy-textures` / `--png` / `--texc` — texture handling, see
   [Textures](#textures).
 
-Mesh references resolve against the target project first — by **filename
+FBX references resolve against the target project first — by **filename
 stem, case-insensitive** (Unity
 `SM_Env_Tree_03.fbx` → any assetdb `Model` entry whose file stem is
 `sm_env_tree_03`). Ambiguous stems pick the shortest path and warn. Stems the
@@ -364,6 +364,47 @@ Hashes are SHA-256 over LF-normalized content, so CRLF checkouts don't
 misclassify a pristine copy as user-edited. The manifest is seeded with every
 version ever shipped from the engine repo, so projects converted before this
 package existed refresh correctly too.
+
+## Prefab mesh references and static Unity Mesh assets
+
+MeshFilter references retain both the source GUID and the exact string fileID
+through prefab expansion. `m_Mesh` replacements are applied as object references,
+including an explicit null that removes the inherited mesh. Stripped renderers
+and MeshFilters are indexed alongside transforms. For nested components without
+an explicit stripped document, the legacy XOR instance namespace is admitted
+only when the instance's serialized aliases confirm it; foreign source GUIDs
+cannot authenticate an alias. Unresolved mesh replacement targets or missing
+replacement assets fail explicitly instead of rendering the old FBX.
+
+The Node and C# converters support **one uncompressed static Mesh-v10 document**
+per `.asset`: a single float32 stream with positions, normals, tangents and UV0,
+and triangle submeshes with 16- or 32-bit indices. Other versions, layouts,
+compressed/external data, skinning and blend shapes fail with a diagnostic.
+Conversion needs `--project` and writes a standard GLB under
+`Models_Unity/SerializedMeshes/<source-guid>/<fileID>.glb`. This is authoring code;
+the engine's existing glTF importer owns runtime loading. No Python dependency is
+added. A re-run writes the same bytes for unchanged source data.
+
+Each original submesh becomes a uniquely named mesh node and keeps its original
+material domain. Renderer material-array length never truncates the geometry.
+GLB X reflection and reversed triangle winding pair with the engine's default
+Mirror X import; V is flipped and tangent handedness is adjusted consistently.
+All-NaN source tangent vectors alone receive a stable perpendicular basis, with
+the repaired vertex indices reported; other non-finite data is rejected.
+
+This does **not** establish general FBX-to-Unity material-slot parity. Serialized
+Mesh submesh order is explicit; native FBX indices may differ from Unity renderer
+slots. Missing inherited renderer defaults cannot be reconstructed from an
+isolated Mesh asset: those GLB domains retain placeholders and are reported as
+`mesh.defaultMaterials`. Unresolved material targets are also reported. A full
+material-fidelity import still needs verified source slot mapping and shader
+adaptation; do not assume that an FBX connection or polygon-first-use order is a
+universal Unity slot-order contract.
+
+Regression coverage includes repeated nested instances, explicit aliases under
+other ID schemes, null and missing references, malformed static buffers,
+material-domain preservation and independent triangle/UV tangent-frame checks.
+All fixtures are synthetic; no licensed asset data is distributed.
 
 ## Limitations (all counted in stats)
 

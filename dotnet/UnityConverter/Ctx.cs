@@ -58,6 +58,7 @@ internal sealed class Ctx
     public AssetDb? AssetDbIndex;
     public readonly Dictionary<string, FileStructure?> StructureCache = [];
     public readonly Dictionary<string, AssetRef?> MaterialCache = [];
+    public readonly Dictionary<MeshReference, AssetRef> SerializedMeshes = [];
     public readonly HashSet<string> MatHide = [];
     public RenderSettingsInfo? RenderSettings;
     public JsonObj? VolumeOverrides;

@@ -10,8 +10,38 @@ internal static class Resolvers
         return e != null ? Js.PathBasename(e.AssetPath, Js.PathExtname(e.AssetPath)) : unityGuid;
     }
 
-    public static AssetRef? ResolveMeshAsset(Ctx ctx, string unityFbxGuid)
+    private static AssetRef ResolveSerializedMesh(Ctx ctx, MeshReference source, PkgEntry entry)
     {
+        if (Js.PathExtname(entry.AssetPath).ToLowerInvariant() != ".asset")
+            throw new InvalidDataException($"Unsupported MeshFilter asset: {entry.AssetPath} ({source.FileId})");
+        if (string.IsNullOrEmpty(source.FileId)) throw new InvalidDataException($"Serialized Mesh reference has no fileID: {source.Guid}");
+        if (ctx.SerializedMeshes.TryGetValue(source, out AssetRef? cached)) return cached;
+        UnityStaticMesh.Mesh mesh = UnityStaticMesh.Read(Js.ReadFileUtf8(Js.PathJoin(entry.Dir, "asset")), source.FileId);
+        if (ctx.ModelSeedDir == null) throw new InvalidDataException("Serialized Unity Mesh conversion requires --project");
+        string relative = $"SerializedMeshes/{source.Guid}/{source.FileId}.glb";
+        string destination = Js.PathJoin(ctx.ModelSeedDir, relative);
+        mesh.Name = Emitter.SanitizeName(mesh.Name);
+        if (mesh.Name.Length == 0) mesh.Name = "UnityMesh";
+        byte[] data = UnityStaticMesh.EncodeGlb(mesh);
+        Directory.CreateDirectory(Js.PathDirname(destination));
+        if (!File.Exists(destination) || !File.ReadAllBytes(destination).AsSpan().SequenceEqual(data))
+            File.WriteAllBytes(destination, data);
+        if (mesh.RepairedTangentVertices.Count > 0)
+            G.Warn($"{entry.AssetPath}: repaired undefined tangents at vertices {string.Join(", ", mesh.RepairedTangentVertices)}", ctx.Verbose);
+        ConvertCli.RecordOutput(ctx, destination, "model");
+        var result = new AssetRef { Guid = "", Path = $"{Materials.kModelSeedRel}/{relative}", Seeded = true,
+            MeshName = mesh.Name, PartCount = mesh.Submeshes.Count };
+        G.ProgressItem("models", result.Path);
+        ctx.SerializedMeshes[source] = result;
+        return result;
+    }
+
+    public static AssetRef? ResolveMeshAsset(Ctx ctx, MeshReference source)
+    {
+        string unityFbxGuid = source.Guid;
+        PkgEntry? entry = ctx.PkgGet(unityFbxGuid);
+        if (entry != null && Js.PathExtname(entry.AssetPath).ToLowerInvariant() != ".fbx")
+            return ResolveSerializedMesh(ctx, source, entry);
         if (G.MeshRefCache.TryGetValue(unityFbxGuid, out AssetRef? cached)) return cached;
         AssetRef? result = null;
         if (ctx.AssetDbIndex != null)
