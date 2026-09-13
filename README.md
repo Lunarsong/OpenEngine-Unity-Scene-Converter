@@ -26,6 +26,32 @@ npm link        # puts unity-scene-convert / unity-scene-validate on PATH
 
 Requires Node.js >= 22.
 
+## Static mesh library API
+
+Asset recipes can use the shared decoder and encoder directly from the package
+entry point without running a scene conversion:
+
+```js
+const { readUnityMesh, encodeUnityMeshGlb } = require('openengine-unity-scene-converter');
+const mesh = readUnityMesh(unityMeshYaml, '4300000'); // exact fileID string
+const glb = encodeUnityMeshGlb(mesh, { materialNames: ['Roof', 'Timber'] });
+```
+
+`readUnityMesh(text, fileID = '4300000')` accepts the supported single-document,
+uncompressed static Mesh v10 layout and returns owned typed arrays in source
+coordinates. `encodeUnityMeshGlb(mesh, { materialNames } = {})` returns a GLB
+Buffer using the converter's existing coordinate, winding, UV and tangent
+conventions. Invalid or unsupported input throws; these functions do not write
+files or start the CLI.
+
+`materialNames` is optional: omitted, `undefined` or `null` retains the exact
+default output bytes and `UnityMaterial_<slot>` names. Otherwise it must be an
+array with one nonempty string per source submesh, in source order. Names are
+preserved verbatim, including whitespace and duplicates; they label material
+domains and do not resolve materials, merge slots or alter geometry. The managed
+equivalent is `UnityStaticMesh.EncodeGlb(mesh, IReadOnlyList<string>? materialNames = null)`.
+Its default bytes and named output match JavaScript.
+
 ## CLI usage
 
 ```

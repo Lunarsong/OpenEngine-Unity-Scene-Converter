@@ -1,8 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 
 const { readUnityMesh, encodeGlb } = createRequire(import.meta.url)('../src/unity-static-mesh.js');
+
+test('package entry exposes the shared static mesh library without invoking the CLI', () => {
+    const library = createRequire(import.meta.url)('..');
+    assert.equal(library.readUnityMesh, readUnityMesh);
+    assert.equal(library.encodeUnityMeshGlb, encodeGlb);
+    const names = ['Roof', 'Timber'];
+    const { document } = glb(library.encodeUnityMeshGlb(library.readUnityMesh(fixture()), { materialNames: names }));
+    assert.deepEqual(document.materials.map(material => material.name), names);
+});
 
 // Entirely synthetic Mesh v10 data; no Unity package or licensed fixtures.
 function fixture(options = {}) {
@@ -305,6 +315,43 @@ test('independent triangle/UV derivatives agree with encoded normals and tangent
             uv.forEach((value, i) => approx([value[0], 1 - value[1]], Array.from(mesh.attributes.TEXCOORD_0.subarray(selected[i] * 2, selected[i] * 2 + 2))));
             assert.deepEqual([ids[0], ids[2], ids[1]].map(index => selected[index]), Array.from(mesh.submeshes[primitive.material]));
         }
+    }
+});
+
+test('omitted material names preserve the legacy GLB bytes', () => {
+    const mesh = readUnityMesh(fixture());
+    const baseline = encodeGlb(mesh);
+    assert.equal(createHash('sha256').update(baseline).digest('hex'), '05ff941d116ac6f2eb33d140f7219ef8cf62307d7538f7c714c17167ad2f1af6');
+    for (const options of [undefined, {}, { materialNames: undefined }, { materialNames: null }, { materialNames: ['UnityMaterial_0', 'UnityMaterial_1'] }]) {
+        assert.deepEqual(encodeGlb(mesh, options), baseline);
+    }
+});
+
+test('custom material names preserve distinct domains and all geometry bytes', () => {
+    const mesh = readUnityMesh(fixture()), before = structuredClone(mesh);
+    const baseline = glb(encodeGlb(mesh));
+    assert.equal(createHash('sha256').update(encodeGlb(mesh, { materialNames: ['Roof "λ"', 'Wood\\trim'] })).digest('hex'),
+        'c97277caf99955975804b8ec086334c9c84dcdbd07ccc2a67db6ddc9b97d861d');
+    for (const names of [['Roof "λ"', 'Wood\\trim'], ['Repeated', 'Repeated'], [' spaced ', '\t']]) {
+        const snapshot = [...names], { document, binary } = glb(encodeGlb(mesh, { materialNames: names }));
+        assert.deepEqual(document.materials, names.map(name => ({ name })));
+        assert.deepEqual(document.meshes.map(part => part.primitives[0].material), [0, 1]);
+        assert.deepEqual(binary, baseline.binary);
+        assert.deepEqual({ ...document, materials: baseline.document.materials }, baseline.document);
+        assert.deepEqual(names, snapshot);
+    }
+    assert.deepEqual(mesh, before);
+});
+
+test('material names reject wrong domains, types and sparse arrays', () => {
+    const mesh = readUnityMesh(fixture());
+    for (const materialNames of [[], ['Roof'], ['Roof', 'Wood', 'Extra'], 'Roof', {}, new Set(['Roof', 'Wood']),
+        new Float32Array(2), ['', 'Wood'], ['Roof', null], ['Roof', undefined], ['Roof', 42], [new String('Roof'), 'Wood'],
+        Array(2), ['Roof', ,]]) {
+        assert.throws(() => encodeGlb(mesh, { materialNames }), /material names.*one nonempty string per submesh/);
+    }
+    for (const options of [null, [], 'Roof', 42]) {
+        assert.throws(() => encodeGlb(mesh, options), /encoding options/);
     }
 });
 

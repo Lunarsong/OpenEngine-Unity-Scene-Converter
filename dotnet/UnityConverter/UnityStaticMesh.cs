@@ -202,9 +202,15 @@ internal static class UnityStaticMesh
         return result;
     }
 
-    public static byte[] EncodeGlb(Mesh mesh)
+    public static byte[] EncodeGlb(Mesh mesh, IReadOnlyList<string>? materialNames = null)
     {
         Require(mesh != null && mesh.Name != null && mesh.Submeshes.Count > 0, "Invalid static mesh");
+        if (materialNames != null)
+        {
+            Require(materialNames.Count == mesh!.Submeshes.Count, "Invalid static mesh material names: expected one nonempty string per submesh");
+            foreach (string name in materialNames)
+                Require(!string.IsNullOrEmpty(name), "Invalid static mesh material names: expected one nonempty string per submesh");
+        }
         Require(mesh!.Attributes.TryGetValue("POSITION", out var positions) && positions.Length % 3 == 0 && positions.Length is > 0 and <= 3000000, "Invalid static mesh vertex count");
         int count = positions!.Length / 3;
         Require(mesh.Attributes.Keys.Order().SequenceEqual(Attributes.Select(a => a.Name).Order()), "Invalid static mesh attributes");
@@ -215,7 +221,7 @@ internal static class UnityStaticMesh
         var sceneNodes = new JsonArr(); var nodes = new JsonArr(); var meshes = new JsonArr(); var views = new JsonArr(); var accessors = new JsonArr();
         var document = Obj(("asset", Obj(("version", "2.0"), ("generator", "OpenEngine Unity static mesh converter"))),
             ("scene", 0), ("scenes", new JsonArr { Obj(("nodes", sceneNodes)) }), ("nodes", nodes), ("meshes", meshes),
-            ("materials", new JsonArr(mesh.Submeshes.Select((_, slot) => (object?)Obj(("name", $"UnityMaterial_{slot}"))))),
+            ("materials", new JsonArr(mesh.Submeshes.Select((_, slot) => (object?)Obj(("name", materialNames == null ? $"UnityMaterial_{slot}" : materialNames[slot]))))),
             ("buffers", new JsonArr()), ("bufferViews", views), ("accessors", accessors));
         using var binary = new MemoryStream();
         int Accessor(float[]? floats, uint[]? indices, int dimension, int target)

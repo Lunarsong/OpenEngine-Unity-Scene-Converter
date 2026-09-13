@@ -184,14 +184,26 @@ function readUnityMesh(text, fileID = '4300000') {
 
 /**
  * Return a GLB Buffer with one named mesh/node `${name}_${slot}` per submesh and
- * material domains `UnityMaterial_${slot}`. X reflection plus reversed winding
- * makes the engine's default MirrorX import restore Unity geometry. UV V is
+ * material domains `UnityMaterial_${slot}` unless options.materialNames supplies
+ * one nonempty string per source submesh. Names do not merge domain identities.
+ * X reflection plus reversed winding makes the engine's default MirrorX import
+ * restore Unity geometry. UV V is
  * flipped for glTF; the two handedness changes cancel, so tangent.w is retained.
  * Input is the flat typed-array representation returned by readUnityMesh.
  */
-function encodeGlb(mesh) {
+function encodeGlb(mesh, options = {}) {
     requireMesh(mesh && typeof mesh.name === 'string' && mesh.attributes && Array.isArray(mesh.submeshes) && mesh.submeshes.length > 0,
         'Invalid static mesh');
+    requireMesh(options !== null && typeof options === 'object' && !Array.isArray(options), 'Invalid static mesh encoding options');
+    const { materialNames = null } = options;
+    if (materialNames !== null) {
+        requireMesh(Array.isArray(materialNames) && materialNames.length === mesh.submeshes.length,
+            'Invalid static mesh material names: expected one nonempty string per submesh');
+        for (const name of materialNames) {
+            requireMesh(typeof name === 'string' && name.length > 0,
+                'Invalid static mesh material names: expected one nonempty string per submesh');
+        }
+    }
     const count = mesh.attributes.POSITION?.length / 3;
     requireMesh(Number.isInteger(count) && count > 0 && count <= 1000000, 'Invalid static mesh vertex count');
     requireMesh(Object.keys(mesh.attributes).sort().join(',') === Object.keys(ATTRIBUTES).sort().join(','), 'Invalid static mesh attributes');
@@ -207,7 +219,7 @@ function encodeGlb(mesh) {
     const document = {
         asset: { version: '2.0', generator: 'OpenEngine Unity static mesh converter' },
         scene: 0, scenes: [{ nodes: [] }], nodes: [], meshes: [],
-        materials: mesh.submeshes.map((_, slot) => ({ name: `UnityMaterial_${slot}` })),
+        materials: mesh.submeshes.map((_, slot) => ({ name: materialNames === null ? `UnityMaterial_${slot}` : materialNames[slot] })),
         buffers: [], bufferViews: [], accessors: [],
     };
     const chunks = [];

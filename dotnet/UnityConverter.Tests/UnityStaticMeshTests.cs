@@ -124,6 +124,52 @@ public class UnityStaticMeshTests
             Assert.Throws<InvalidDataException>(() => UnityStaticMesh.Read(SetFloats(Fixture(), (0, offset, float.PositiveInfinity))));
     }
 
+    [Fact]
+    public void OmittedMaterialNamesPreserveLegacyGlbBytes()
+    {
+        var mesh = UnityStaticMesh.Read(Fixture());
+        byte[] baseline = UnityStaticMesh.EncodeGlb(mesh);
+        Assert.Equal("05ff941d116ac6f2eb33d140f7219ef8cf62307d7538f7c714c17167ad2f1af6", Convert.ToHexString(SHA256.HashData(baseline)).ToLowerInvariant());
+        Assert.Equal(baseline, UnityStaticMesh.EncodeGlb(mesh, null));
+        Assert.Equal(baseline, UnityStaticMesh.EncodeGlb(mesh, ["UnityMaterial_0", "UnityMaterial_1"]));
+    }
+
+    [Fact]
+    public void CustomMaterialNamesPreserveDistinctDomainsAndGeometryBytes()
+    {
+        var mesh = UnityStaticMesh.Read(Fixture());
+        byte[] baselineBytes = UnityStaticMesh.EncodeGlb(mesh);
+        using var baseline = new Glb(baselineBytes);
+        // Same synthetic names and bytes pinned by the JavaScript library test.
+        Assert.Equal("c97277caf99955975804b8ec086334c9c84dcdbd07ccc2a67db6ddc9b97d861d", Convert.ToHexString(SHA256.HashData(UnityStaticMesh.EncodeGlb(mesh, ["Roof \"λ\"", "Wood\\trim"]))).ToLowerInvariant());
+        foreach (string[] names in new[] { new[] { "Roof \"λ\"", "Wood\\trim" }, ["Repeated", "Repeated"], [" spaced ", "\t"] })
+        {
+            string[] snapshot = names.ToArray();
+            byte[] bytes = UnityStaticMesh.EncodeGlb(mesh, names);
+            using var actual = new Glb(bytes);
+            Assert.Equal(names, actual.Root.GetProperty("materials").EnumerateArray().Select(material => material.GetProperty("name").GetString()));
+            Assert.Equal(new[] { 0, 1 }, actual.Root.GetProperty("meshes").EnumerateArray().Select(part => part.GetProperty("primitives")[0].GetProperty("material").GetInt32()));
+            foreach (var property in baseline.Root.EnumerateObject())
+                if (property.Name != "materials") Assert.Equal(property.Value.GetRawText(), actual.Root.GetProperty(property.Name).GetRawText());
+            int baselineOffset = 28 + (int)BinaryPrimitives.ReadUInt32LittleEndian(baselineBytes.AsSpan(12, 4));
+            int actualOffset = 28 + (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12, 4));
+            Assert.Equal(baselineBytes[baselineOffset..], bytes[actualOffset..]);
+            Assert.Equal(snapshot, names);
+        }
+        Assert.Equal(baselineBytes, UnityStaticMesh.EncodeGlb(mesh));
+    }
+
+    [Fact]
+    public void MaterialNamesRejectWrongDomainCountAndEmptyOrNullEntries()
+    {
+        var mesh = UnityStaticMesh.Read(Fixture());
+        foreach (string[] names in new[] { Array.Empty<string>(), ["Roof"], ["Roof", "Wood", "Extra"], ["", "Wood"], ["Roof", null!] })
+        {
+            var error = Assert.Throws<InvalidDataException>(() => UnityStaticMesh.EncodeGlb(mesh, names));
+            Assert.Contains("material names: expected one nonempty string per submesh", error.Message);
+        }
+    }
+
     [Theory]
     [InlineData("serializedVersion: 10", "serializedVersion: 9")]
     [InlineData("m_MeshCompression: 0", "m_MeshCompression: 1")]

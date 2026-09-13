@@ -3874,6 +3874,8 @@ if (require.main === module) main();
 
 module.exports = {
     main,
+    // Static mesh library entry points for authoring recipes.
+    readUnityMesh, encodeUnityMeshGlb: encodeGlb,
     classifyMaterial, buildTriplanarDoc, buildMaterialDoc, buildWaterDoc, buildFallsDoc, parseUnityMat,
     // Surface-shader refresh (exercised by tests/surface-shader-refresh.test.mjs).
     ensureSurfaceShaderCopied, classifySurfaceShaderDest, hashShaderText,
