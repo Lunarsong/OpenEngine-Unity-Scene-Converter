@@ -1,7 +1,7 @@
 namespace GameEngine.UnityConverter;
 
 // File IDs stay strings: Unity's serialized IDs can exceed double precision.
-internal sealed record MeshReference(string Guid, string? FileId);
+internal sealed record UnityObjectReference(string Guid, string? FileId, bool Embedded = false, string? SerializedVersion = null);
 
 internal sealed class LightInfo
 {
@@ -28,10 +28,11 @@ internal sealed class SceneNode
     public string FatherAnchor = "0";
     public string? Father;
     public List<string> Children = [];
-    public MeshReference? MeshRef;
+    public UnityObjectReference? MeshRef;
     public string? MeshPrimitive;
     public double MatCount = 1;
-    public List<string?> MatGuids = [];
+    public List<UnityObjectReference?> MaterialRefs = [];
+    public IReadOnlyList<string?> MatGuids => MaterialRefs.Select(r => r is { Embedded: false } ? r.Guid : null).ToArray();
     public bool CastShadows = true;
     public bool ReceiveShadows = true;
     public bool RendererEnabled = true;
@@ -62,7 +63,7 @@ internal sealed class SceneNode
             MeshRef = MeshRef,
             MeshPrimitive = MeshPrimitive,
             MatCount = MatCount,
-            MatGuids = [.. MatGuids],
+            MaterialRefs = [.. MaterialRefs],
             CastShadows = CastShadows,
             ReceiveShadows = ReceiveShadows,
             RendererEnabled = RendererEnabled,
@@ -75,20 +76,25 @@ internal sealed class SceneNode
         return c;
     }
 
-    // JS sparse-array semantics for matGuids[idx] = value.
-    public void SetMatGuid(int idx, string? guid)
+    // Full scoped references own the slots; the GUID-only view is derived.
+    public void SetMaterialReference(int idx, UnityObjectReference? reference)
     {
-        while (MatGuids.Count <= idx) MatGuids.Add(null);
-        MatGuids[idx] = guid;
+        while (MaterialRefs.Count <= idx) MaterialRefs.Add(null);
+        MaterialRefs[idx] = reference;
     }
 
-    public string? GetMatGuid(int idx) => idx >= 0 && idx < MatGuids.Count ? MatGuids[idx] : null;
+    public string? GetMatGuid(int idx) => idx >= 0 && idx < MaterialRefs.Count && MaterialRefs[idx] is { Embedded: false } reference ? reference.Guid : null;
 }
 
 /// Parsed file structure — nodes in insertion order plus anchor aliases.
 internal sealed class FileStructure
 {
     public bool IsFbx;
+    public string SourceGuid = "";
+    public Dictionary<string, UnityYamlDoc> Documents = [];
+    public List<LodSourceGroup> LodGroups = [];
+    public Dictionary<string, LodSourceGroup> AnchorToLodGroup = [];
+    public List<string> UnsupportedStructuralOperations = [];
     public readonly List<string> NodeOrder = [];
     public readonly Dictionary<string, SceneNode> NodesById = [];
     public readonly Dictionary<string, string> AnchorToNode = [];
@@ -117,5 +123,6 @@ internal sealed class InstanceClone
     public required string SourceGuid;
     public required FileStructure Sub;
     public required Dictionary<string, string> Map; // sub node id -> clone id
+    public required Dictionary<LodSourceGroup, LodSourceGroup> GroupClones;
     public required string RootCloneId;
 }

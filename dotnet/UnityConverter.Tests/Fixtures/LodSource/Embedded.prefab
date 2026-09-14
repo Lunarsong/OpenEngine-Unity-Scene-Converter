@@ -1,0 +1,35 @@
+--- !u!1 &11
+GameObject:
+  m_Name: EmbeddedImpostor
+  m_IsActive: 1
+--- !u!4 &12
+Transform:
+  m_GameObject: {fileID: 11}
+  m_Father: {fileID: 0}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+--- !u!33 &33
+MeshFilter:
+  m_GameObject: {fileID: 11}
+  m_Mesh: {fileID: -9007199254741023}
+--- !u!23 &23
+MeshRenderer:
+  m_GameObject: {fileID: 11}
+  m_Enabled: 1
+  m_CastShadows: 1
+  m_ReceiveShadows: 1
+  m_Materials:
+  - {fileID: 2100077}
+--- !u!43 &-9007199254741023
+Mesh:
+  serializedVersion: 11
+  m_Name: EmbeddedMesh
+--- !u!21 &2100077
+Material:
+  serializedVersion: 8
+  m_Name: EmbeddedMaterial
+--- !u!28 &2800077
+Texture2D:
+  serializedVersion: 2
+  m_Name: EmbeddedTexture

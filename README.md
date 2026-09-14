@@ -451,7 +451,7 @@ All fixtures are synthetic; no licensed asset data is distributed.
   stripped doc (`dropped deep TRS/prop overrides`): the node keeps its
   prefab-default value. `m_IsActive=0` drops are reported separately since
   they would leave meshes visible that Unity hides.
-- LODGroups: ignored (all placements emit LOD0).
+- LODGroups: ordered Unity source records are retained in the library structure and JSON report; engine renderer-group selection is unsupported. Embedded mesh/material members are reported and omitted, and unapplied group overrides are explicit. See [LOD source records](docs/LodSourceRecords.md).
 - Counters for prefab-*internal* skipped content (e.g. lights inside a
   prefab) count once per unique prefab, not per instance.
 

@@ -10,7 +10,7 @@ internal static class Resolvers
         return e != null ? Js.PathBasename(e.AssetPath, Js.PathExtname(e.AssetPath)) : unityGuid;
     }
 
-    private static AssetRef ResolveSerializedMesh(Ctx ctx, MeshReference source, PkgEntry entry)
+    private static AssetRef ResolveSerializedMesh(Ctx ctx, UnityObjectReference source, PkgEntry entry)
     {
         if (Js.PathExtname(entry.AssetPath).ToLowerInvariant() != ".asset")
             throw new InvalidDataException($"Unsupported MeshFilter asset: {entry.AssetPath} ({source.FileId})");
@@ -36,7 +36,7 @@ internal static class Resolvers
         return result;
     }
 
-    public static AssetRef? ResolveMeshAsset(Ctx ctx, MeshReference source)
+    public static AssetRef? ResolveMeshAsset(Ctx ctx, UnityObjectReference source)
     {
         string unityFbxGuid = source.Guid;
         PkgEntry? entry = ctx.PkgGet(unityFbxGuid);

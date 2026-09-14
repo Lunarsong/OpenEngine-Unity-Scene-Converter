@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { nestedScene } from '../fixtures/lod-source.mjs';
 
 // ------------------------------------------------------------- helpers -----
 function put(dir, guid, pathname, content) {
@@ -528,6 +529,13 @@ function matYaml(name, { shaderGuid, keywords = [], renderType = 'Opaque', texEn
 export function buildCorpus(root) {
     const fixtures = [];
     const F = (name, buildEntriesOrDir, runs) => fixtures.push({ name, ...buildEntriesOrDir, runs });
+    {
+        const dir = path.join(root, 'lod-source');
+        writeExtractedDir(dir, nestedScene());
+        F('lod-source', { pkgDir: dir }, [
+            { name: 'ordered-scoped-records', args: ['--pkg', dir, '--scene', 'LOD.unity', '--project', '<PROJ>', '--png', '--json'] },
+        ]);
+    }
 
     // ---- 1. protocol (editor-protocol.test.mjs corpus) ----
     {
@@ -902,7 +910,7 @@ export function buildCorpus(root) {
         const dir = path.join(root, 'materials');
         const pkg = path.join(dir, 'pkg');
         const T = (n) => `00000000000000000000000000t${String(n).padStart(5, '0')}`;
-        const M = (n) => `00000000000000000000000000m${String(n).padStart(5, '0')}`;
+        const M = (n) => `00000000000000000000000000c${String(n).padStart(5, '0')}`;
         // Hex-only texture guids: the parser's guid regex is [0-9a-f]{32}, so the
         // legacy T(n) ids (with their 't') never bind — these do.
         const UT = (n) => `00000000000000000000000000ab000${n}`;
@@ -1112,11 +1120,11 @@ export function buildCorpus(root) {
             meshObjectYaml(4300, 'UrpDeadEmission', null, { matGuids: [M(20)] }),
             meshObjectYaml(4400, 'UrpDropCorners', null, { builtinFileId: 10209, matGuids: [M(21)] }),
             meshObjectYaml(2600, 'TwoMat', null, { matGuids: [M(1), M(3)] }),
-            meshObjectYaml(2700, 'MissingMat', null, { matGuids: ['00000000000000000000000000nosuch'] }),
+            meshObjectYaml(2700, 'MissingMat', null, { matGuids: ['00000000000000000000000000abcdef'] }),
             meshObjectYaml(2800, 'Hidden', null, { inactive: true }),
             meshObjectYaml(2900, 'DisabledRenderer', null, { disabled: true, noCast: true, noReceive: true }),
             lightYaml(300, 'Sun', 1),
-            // Skinned mesh renderer + camera + particles + LODGroup, all counted skips.
+            // Skinned renderer/camera/particles are counted skips; disabled LOD source metadata is retained.
             [
                 '--- !u!1 &3000', 'GameObject:', '  m_Name: Character', '  m_IsActive: 1',
                 '--- !u!4 &3001', 'Transform:', '  m_GameObject: {fileID: 3000}',
@@ -1134,10 +1142,14 @@ export function buildCorpus(root) {
                 '--- !u!20 &3102', 'Camera:', '  m_GameObject: {fileID: 3100}',
                 '--- !u!198 &3103', 'ParticleSystem:', '  m_GameObject: {fileID: 3100}',
                 '--- !u!205 &3104', 'LODGroup:', '  m_GameObject: {fileID: 3100}',
+                '  m_Enabled: 0', '  m_LocalReferencePoint: {x: 0, y: 0, z: 0}', '  m_Size: 1',
+                '  m_FadeMode: 0', '  m_AnimateCrossFading: 0', '  m_LastLODIsBillboard: 0',
+                '  m_LODs:', '  - screenRelativeHeight: 0.1', '    fadeTransitionWidth: 0',
+                '    renderers:', '    - renderer: {fileID: 3002}',
             ].join('\n'),
         ];
         const entries = {
-            '00000000000000000000000000ma0001': {
+            '00000000000000000000000000aa0001': {
                 pathname: 'Assets/Scenes/MatTest.unity',
                 asset: sceneYaml(sceneObjects, kDayRenderSettings),
             },
@@ -1160,10 +1172,10 @@ export function buildCorpus(root) {
     {
         const dir = path.join(root, 'prefab');
         const pkg = path.join(dir, 'pkg');
-        const kFbxGuid = '00000000000000000000000000pf00f1';
-        const kPrefabGuid = '00000000000000000000000000pf00p1';
-        const kMatA = '00000000000000000000000000pf00m1';
-        const kMatB = '00000000000000000000000000pf00m2';
+        const kFbxGuid = '00000000000000000000000000ff00f1';
+        const kPrefabGuid = '00000000000000000000000000ff00b1';
+        const kMatA = '00000000000000000000000000ff00a1';
+        const kMatB = '00000000000000000000000000ff00a2';
         const prefabYaml = sceneYaml([
             meshObjectYaml(5100, 'SM_Prop_Bench_01', kFbxGuid, { matGuids: [kMatA] }),
         ]);
@@ -1185,7 +1197,7 @@ export function buildCorpus(root) {
                 : '      objectReference: {fileID: 0}',
         ];
         const sceneEntries = {
-            '00000000000000000000000000pf0001': {
+            '00000000000000000000000000ff0001': {
                 pathname: 'Assets/Scenes/PrefabTest.unity',
                 asset: sceneYaml([
                     instance(9001, [

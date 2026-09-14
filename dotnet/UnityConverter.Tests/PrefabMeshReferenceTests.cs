@@ -86,7 +86,7 @@ public class PrefabMeshReferenceTests
     public void TypedDirectReferenceEmitsExactFileIdAndOrderedMaterialDomains()
     {
         using var fixture = new Fixture(); var ctx = fixture.Context(); var structure = Build(ctx, Base);
-        Assert.Equal(new MeshReference(MeshA, "4300000"), structure.Get(structure.RootIds[0]).MeshRef);
+        Assert.Equal(new UnityObjectReference(MeshA, "4300000"), structure.Get(structure.RootIds[0]).MeshRef);
         var emitted = Emitter.EmitScene(ctx, structure, "Direct");
         Assert.Equal(2, emitted.Emitted.MeshEntities);
         Assert.Contains($"SerializedMeshes/{MeshA}/4300000.glb", emitted.Text);
@@ -107,7 +107,7 @@ public class PrefabMeshReferenceTests
             Mod(Wrapper, Xor(Renderer, "1000"), "m_Materials.Array.data[1]", $"{{fileID: 2100000, guid: {MatA}, type: 2}}")) + Instance("3000", Wrapper));
         var ctx = fixture.Context(); var structure = Build(ctx, Scene);
         var a = structure.Get(structure.RootIds[0]); var b = structure.Get(structure.RootIds[1]);
-        Assert.Equal(new MeshReference(MeshB, "4300001"), a.MeshRef); Assert.Equal(new MeshReference(MeshA, "4300000"), b.MeshRef);
+        Assert.Equal(new UnityObjectReference(MeshB, "4300001"), a.MeshRef); Assert.Equal(new UnityObjectReference(MeshA, "4300000"), b.MeshRef);
         Assert.Equal(new[] { MatA, MatA }, a.MatGuids); Assert.Equal(new[] { MatA, MatB }, b.MatGuids);
         Assert.Equal(new double[] { 2, 3, 4 }, a.Pos); Assert.Equal(a.Pos, b.Pos);
         var original = Build(ctx, Base); Assert.Equal(b.MeshRef, original.Get(original.RootIds[0]).MeshRef);
@@ -205,7 +205,7 @@ public class PrefabMeshReferenceTests
         var ctx = fixture.Context(); Resolvers.ResolveMeshAsset(ctx, new(MeshA, "4300000"));
         Assert.Contains(G.Warnings, warning => warning.Contains("repaired undefined tangents at vertices 0", StringComparison.Ordinal));
         fixture.Put(Foreign, "Other.png", "not a mesh");
-        foreach (var reference in new[] { new MeshReference(MeshB, null), new(MeshB, "4300999"), new(Foreign, "4300000") })
+        foreach (var reference in new[] { new UnityObjectReference(MeshB, null), new(MeshB, "4300999"), new(Foreign, "4300000") })
         {
             ctx = fixture.Context(); Assert.Throws<InvalidDataException>(() => Resolvers.ResolveMeshAsset(ctx, reference)); Assert.Empty(ctx.Outputs);
         }

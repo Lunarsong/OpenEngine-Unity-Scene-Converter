@@ -286,7 +286,11 @@ internal static class Emitter
         var emitted = new EmittedCounts();
 
         var keepCache = new Dictionary<string, bool>();
-        bool IsMeshNode(SceneNode n) => (n.MeshRef != null && !n.Skinned && !n.NonStaticFbx) || n.MeshPrimitive != null;
+        foreach (LodSourceGroup group in st.LodGroups)
+            G.NoteDropped("lodGroup.runtimeSelection", $"{group.Source.Guid}/{group.Source.FileId}: source records retained; renderer-group selection is unsupported{(group.UnsupportedOverrides.Count > 0 ? "; effective LOD overrides are unresolved" : "")}", ctx.Verbose);
+        foreach (SceneNode node in st.Nodes()) foreach (string reason in LodSource.UnsupportedBindings(node))
+            G.NoteDropped("renderer.embeddedSource", $"{node.Name}: {reason}; renderer omitted", ctx.Verbose);
+        bool IsMeshNode(SceneNode n) => LodSource.UnsupportedBindings(n).Count == 0 && ((n.MeshRef != null && !n.Skinned && !n.NonStaticFbx) || n.MeshPrimitive != null);
 
         void CountSubtreeSkips(string nid)
         {

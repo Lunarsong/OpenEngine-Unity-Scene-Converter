@@ -432,6 +432,7 @@ internal static class ConvertCli
         rec["seededMeshes"] = (double)e.SeededMeshes;
         rec["lights"] = (double)e.Lights;
         rec["warnings"] = (double)G.Warnings.Count;
+        rec["lodGroups"] = LodSource.Summarize(st);
         rec["dropped"] = dropped;
         return rec;
     }
