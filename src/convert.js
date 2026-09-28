@@ -2133,7 +2133,6 @@ function emitScene(ctx, st, sceneName) {
             out.push(`BloomEffect.threshold = ${fmtF(thr)}`);
             out.push(`BloomEffect.knee = ${fmtF(0.5 * thr)}`);
             out.push(`BloomEffect.intensity = ${fmtF(bloom.intensity)}`);
-            out.push(`BloomEffect.strength = 1`);
             out.push(`BloomEffect.scatter = ${fmtF(0.05 + 0.9 * scatter)}`);
             if (bloom.dirtIntensity)
                 warn(`volume Bloom lens-dirt (intensity ${bloom.dirtIntensity}) not translated (non-physical overlay; URP adds dirtTex * intensity * bloom on top of the bloom term)`, ctx.verbose);

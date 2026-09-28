@@ -574,7 +574,6 @@ internal static class Emitter
                 output.Add($"BloomEffect.threshold = {FmtF(thr)}");
                 output.Add($"BloomEffect.knee = {FmtF(0.5 * thr)}");
                 output.Add($"BloomEffect.intensity = {FmtF(bloomIntensity)}");
-                output.Add("BloomEffect.strength = 1");
                 output.Add($"BloomEffect.scatter = {FmtF(0.05 + 0.9 * scatter)}");
                 if (bloom["dirtIntensity"] is double di && di != 0)
                     G.Warn($"volume Bloom lens-dirt (intensity {Js.NumberToString(di)}) not translated (non-physical overlay; URP adds dirtTex * intensity * bloom on top of the bloom term)", ctx.Verbose);
