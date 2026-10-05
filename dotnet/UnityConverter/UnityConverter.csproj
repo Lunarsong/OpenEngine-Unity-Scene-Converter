@@ -19,15 +19,11 @@
   </ItemGroup>
 
   <!-- The bundled project-side surface shaders + shipped-hashes manifest are
-       embedded from the JS converter's shaders/ dir so both converters stage
-       byte-identical copies. One source of truth: that shaders/ dir. It sits at
-       the repo root in the standalone converter repo and under the synced JS
-       mirror (Tools/ai/unity-scene-convert/) in the engine embed; probe for
-       whichever layout holds this checkout so the project file itself stays
-       byte-identical in both. -->
+       embedded from the repository's shaders/ dir, the one source of truth the
+       JS converter stages from too, so both converters emit byte-identical
+       copies. -->
   <PropertyGroup>
-    <ConverterShadersDir Condition="Exists('..\..\shaders\shipped-hashes.json')">..\..\shaders</ConverterShadersDir>
-    <ConverterShadersDir Condition="'$(ConverterShadersDir)' == ''">..\..\Tools\ai\unity-scene-convert\shaders</ConverterShadersDir>
+    <ConverterShadersDir>..\..\shaders</ConverterShadersDir>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="$(ConverterShadersDir)\water_stylized.glsl" Link="shaders\water_stylized.glsl" LogicalName="shaders/water_stylized.glsl" />

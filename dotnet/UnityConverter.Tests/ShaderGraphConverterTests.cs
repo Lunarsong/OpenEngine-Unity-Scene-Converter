@@ -604,14 +604,10 @@ public class ShaderGraphConverterTests
     }
 
     /// Locates the engine's Graph/Nodes GLSL directory. Resolution order:
-    /// OPENENGINE_ENGINE_ROOT (explicit engine checkout — set-but-wrong is an
-    /// error, never a skip), then walking up from the test binary (an engine
-    /// checkout has Engine/Modules/... above Managed/UnityConverter.Tests/bin).
-    /// Inside the engine embed — marked by UnityConverter/mirror-manifest.json,
-    /// which the embed sync writes and the standalone repo never carries — a
-    /// failed walk means broken discovery and throws, so the audit can never
-    /// silently stop running in engine CI. Only a standalone converter checkout
-    /// with no engine root returns null, and the audit is skipped.
+    /// OPENENGINE_ENGINE_ROOT (explicit engine checkout; set-but-wrong is an
+    /// error, never a skip), then walking up from the test binary (a checkout
+    /// placed inside an engine tree finds Engine/Modules/... above it). With no
+    /// engine root the audit is skipped.
     static string? TryFindEngineGraphNodesRoot()
     {
         const string kNodesSubdir = "Engine/Modules/Rendering/Shaders/Graph/Nodes";
@@ -625,20 +621,14 @@ public class ShaderGraphConverterTests
             return fromEnv;
         }
 
-        bool engineEmbed = false;
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
             string candidate = Path.Combine(dir.FullName, kNodesSubdir);
             if (Directory.Exists(candidate))
                 return candidate;
-            if (File.Exists(Path.Combine(dir.FullName, "UnityConverter", "mirror-manifest.json")))
-                engineEmbed = true;
             dir = dir.Parent;
         }
-        if (engineEmbed)
-            throw new InvalidOperationException(
-                "engine Graph/Nodes directory not found above the engine embed; the pin audit must run from an engine checkout");
         return null;
     }
 
