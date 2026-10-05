@@ -542,15 +542,18 @@ only when the converter changes. To update the engine's copy:
    ```
 
    This runs `dotnet build dotnet/UnityConverter/UnityConverter.csproj -c Release
-   -p:ContinuousIntegrationBuild=true -p:DebugType=none -o dist` (.NET 9 SDK).
-   `ContinuousIntegrationBuild` normalizes source paths and `DebugType=none`
-   drops the PDB, so the same commit builds the same bytes in any checkout
-   location; the assembly's informational version carries the commit it was
-   built from. The bundled shaders in `shaders/` are embedded in the assembly
+   -p:ContinuousIntegrationBuild=true -p:DebugType=none -o dist`.
+   `global.json` pins the .NET SDK to exactly 9.0.318 with roll-forward
+   disabled: install that SDK version (side by side with any other) before
+   building; `dotnet` refuses to build with a different one, because a
+   different SDK produces different bytes. `ContinuousIntegrationBuild`
+   normalizes source paths and `DebugType=none` drops the PDB, so the same
+   commit and SDK build the same bytes in any checkout location; the
+   assembly's informational version carries the commit it was built from. The bundled shaders in `shaders/` are embedded in the assembly
    as resources.
 3. Copy `dist/UnityConverter.dll` over the engine's
-   `EnginePackages/unity-import/Tools/UnityConverter.dll` and update the commit
-   and SHA-256 in `UnityConverter.dll.source`, in one engine pull request.
+   `EnginePackages/unity-import/Tools/UnityConverter.dll` and update the commit,
+   SDK and SHA-256 in `UnityConverter.dll.source`, in one engine pull request.
 
 ## License
 
