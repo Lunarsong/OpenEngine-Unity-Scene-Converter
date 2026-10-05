@@ -23,6 +23,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test \"tests/**/*.test.mjs\""
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "build:dll": "dotnet build dotnet/UnityConverter/UnityConverter.csproj -c Release -p:ContinuousIntegrationBuild=true -p:DebugType=none -o dist"
   }
 }

@@ -519,12 +519,38 @@ from licensed scenes (all numeric goldens are synthesized and hand-derived);
 contributions must keep it that way.
 
 **Repository relationship:** this repo is the single authoring source for all
-converter code — the JS converter and the C# converter/shader-graph importer.
-The GameEngine repo embeds synced, never-hand-edited copies
-(`Tools/ai/unity-scene-convert/` for the JS package,
-`Managed/UnityConverter{,.Tests}/` for the C# projects), each pinned by a
-hash manifest and drift-guarded in engine CI. Fixes land here first and are
-synced there with the engine's `sync-from-upstream` tool.
+converter code: the JS converter and the C# converter/shader-graph importer.
+The engine does not carry a copy of the sources.
+
+## Using the converter from the engine
+
+The engine's editor runs the C# converter in-process from its `unity-import`
+engine package (Tools > Import Unity Package...). The engine repository
+vendors one built assembly, `EnginePackages/unity-import/Tools/UnityConverter.dll`,
+and records the converter commit it was built from, the build command and the
+file's SHA-256 beside it in `UnityConverter.dll.source`.
+
+The assembly references only the .NET 9 base libraries (no engine assemblies),
+so it does not need rebuilding when the engine changes; it needs rebuilding
+only when the converter changes. To update the engine's copy:
+
+1. Land the change here.
+2. Build the assembly from a clean checkout of that commit:
+
+   ```
+   npm run build:dll
+   ```
+
+   This runs `dotnet build dotnet/UnityConverter/UnityConverter.csproj -c Release
+   -p:ContinuousIntegrationBuild=true -p:DebugType=none -o dist` (.NET 9 SDK).
+   `ContinuousIntegrationBuild` normalizes source paths and `DebugType=none`
+   drops the PDB, so the same commit builds the same bytes in any checkout
+   location; the assembly's informational version carries the commit it was
+   built from. The bundled shaders in `shaders/` are embedded in the assembly
+   as resources.
+3. Copy `dist/UnityConverter.dll` over the engine's
+   `EnginePackages/unity-import/Tools/UnityConverter.dll` and update the commit
+   and SHA-256 in `UnityConverter.dll.source`, in one engine pull request.
 
 ## License
 
