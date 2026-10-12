@@ -519,7 +519,7 @@ The engine does not carry a copy of the sources.
 
 The engine's editor runs the C# converter in-process from its `unity-import`
 engine package (Tools > Import Unity Package...). The engine repository
-vendors one built assembly, `EnginePackages/unity-import/Tools/UnityConverter.dll`,
+vendors one built assembly, `Packages/unity-import/Tools/UnityConverter.dll`,
 and records the converter commit it was built from, the build command and the
 file's SHA-256 beside it in `UnityConverter.dll.source`.
 
@@ -545,7 +545,7 @@ only when the converter changes. To update the engine's copy:
    assembly's informational version carries the commit it was built from. The bundled shaders in `shaders/` are embedded in the assembly
    as resources.
 3. Copy `dist/UnityConverter.dll` over the engine's
-   `EnginePackages/unity-import/Tools/UnityConverter.dll` and update the commit,
+   `Packages/unity-import/Tools/UnityConverter.dll` and update the commit,
    SDK and SHA-256 in `UnityConverter.dll.source`, in one engine pull request.
 
 ## License

@@ -14,7 +14,7 @@
 //     saturation carried 1:1; gradeInLog = true;
 //   - no old keys emitted; hueShift carries in degrees, WhiteBalance -> native
 //     temperature/tint, colorFilter -> ColorFilterEffect (sRGB->linear);
-//   - no option routes SMH through a CubeLutEffect (the engine's LUT runs
+//   - SMH never yields a CubeLutEffect or a baked .cube (the engine's LUT runs
 //     after the tonemap; the native bands grade before it).
 // All fixtures are synthetic — no licensed content.
 
@@ -159,8 +159,10 @@ test('ShadowsMidtonesHighlights -> native three-way bands (URP prep numbers), no
         // Highlights wheel was neutral -> no highlights offset lines emitted
         // (highlightsStart/End band limits still carry the URP partition).
         assert.doesNotMatch(scene, /ColorGradeEffect\.highlights(Color[RGB]|Lightness)/);
-        // NOT the legacy LUT path, and NONE of the removed single-range keys.
+        // No LUT (the engine's CubeLutEffect runs after the tonemap), and NONE
+        // of the removed single-range keys.
         assert.doesNotMatch(scene, /CubeLutEffect\./);
+        assert.equal(fs.existsSync(path.join(tmp, 'proj', 'assets', 'GradeTest_smh_lut.cube')), false);
         assert.doesNotMatch(scene, /ColorGradeEffect\.(brightness|gamma|hue)\b/);
     });
 });
@@ -307,20 +309,6 @@ test('LiftGammaGain is no longer in the dropped-settings summary (it now maps)',
     withTmp((tmp) => {
         const { res } = runConvert(tmp, [lggDoc([1, 0.9, 0.85, 0.02], [1, 1, 1, 0], [1, 1, 1, 0])]);
         assert.doesNotMatch(res.stdout + res.stderr, /LiftGammaGain.*(no engine mapping|no engine equivalent|dropped)/i);
-    });
-});
-
-// The engine applies CubeLutEffect after its filmic tonemap, on display-referred
-// [0,1] colour. A ShadowsMidtonesHighlights gain baked there (x1.704 midtones for
-// this wheel) lifts the whole tonemap shoulder, display 0.56 and up, to white;
-// the native bands grade before the tonemap. SMH has no LUT route, whatever the
-// command line says.
-test('ShadowsMidtonesHighlights never bakes a CubeLutEffect, even with the retired --grade-lut flag', () => {
-    withTmp((tmp) => {
-        const { scene } = runConvert(tmp, [smhDoc([0.5, 0.6, 1.0, 0], [1, 1, 1, 0.176], [1, 1, 1, 0])], ['--grade-lut']);
-        assert.doesNotMatch(scene, /CubeLutEffect\./);
-        assert.equal(fs.existsSync(path.join(tmp, 'proj', 'assets', 'GradeTest_smh_lut.cube')), false);
-        assert.equal(grade(scene, 'midtonesLightness'), 0.0877769);
     });
 });
 
