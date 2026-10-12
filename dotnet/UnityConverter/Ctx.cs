@@ -69,7 +69,6 @@ internal sealed class Ctx
     public readonly MatStats MatStats = new();
     public VolumeProfiles.PipelineInfo? ProjectPipeline;
     public string LocalShadows = "faithful";
-    public bool GradeLutFallback;
     public bool Verbose;
     public readonly List<(string Path, string Kind)> Outputs = [];
     public readonly HashSet<string> OutputSet = [];

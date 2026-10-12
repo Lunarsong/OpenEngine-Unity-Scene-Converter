@@ -11,7 +11,6 @@ internal static class ConvertCli
         public bool Verbose;
         public bool NoCopyTextures;
         public bool Png;
-        public bool GradeLut;
         public bool Json;
 
         public string? Get(string key) => Values.GetValueOrDefault(key);
@@ -76,7 +75,6 @@ internal static class ConvertCli
             if (k == "--verbose") { a.Verbose = true; continue; }
             if (k == "--no-copy-textures") { a.NoCopyTextures = true; continue; }
             if (k == "--png") { a.Png = true; continue; }
-            if (k == "--grade-lut") { a.GradeLut = true; continue; }
             if (k == "--json") { a.Json = true; continue; }
             if (!k.StartsWith("--", StringComparison.Ordinal)) Fail($"Unknown arg: {k}");
             if (k == "--scene")
@@ -259,7 +257,6 @@ internal static class ConvertCli
             PkgDir = pkgDir,
             ProjectDir = args.Get("project"),
             LocalShadows = localShadows,
-            GradeLutFallback = args.GradeLut,
             Verbose = args.Verbose,
         };
         G.LogErr($"Package: {ctx.Pkg.Count} assets indexed");

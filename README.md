@@ -62,7 +62,7 @@ unity-scene-convert [<pkg-dir> [<project-dir>]] \
                     [--assetdb <file>] [--unity-project <unity-project-dir>] \
                     [--out <output.scene>] [--local-shadows off|faithful] \
                     [--no-copy-textures] [--png] [--texc <TextureCompiler.exe>] \
-                    [--grade-lut] [--json] [--verbose]
+                    [--json] [--verbose]
 unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 ```
 
@@ -100,13 +100,6 @@ unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
   in what the pack can't: the RP asset's quality-level volume profile
   (layered UNDER the scene's global volume, URP-style), the renderer's SSAO
   feature (→ `AmbientOcclusionEffect`), and shadow/HDR/MSAA facts (logged).
-- `--grade-lut` — legacy colour-grade path: bake `ShadowsMidtonesHighlights`
-  to a Resolve-style `.cube` LUT in `<project>/assets/` plus `CubeLutEffect`
-  lines (the authored `lutAsset` path is asset-root-relative,
-  `<Scene>_smh_lut.cube`, which is what the engine's SceneIO resolves it
-  against on load). Without the flag, SMH/LGG wheels map to the engine's
-  native `ColorGradeEffect` three-way bands — see
-  [Colour grading](#colour-grading). Kept for one release of A/B comparison.
 - `--local-shadows` — additional-light (point/spot) shadow policy, see
   [Limitations](#limitations-all-counted-in-stats).
 - `--no-copy-textures` / `--png` / `--texc` — texture handling, see

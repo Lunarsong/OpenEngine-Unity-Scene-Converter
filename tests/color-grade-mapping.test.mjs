@@ -14,7 +14,8 @@
 //     saturation carried 1:1; gradeInLog = true;
 //   - no old keys emitted; hueShift carries in degrees, WhiteBalance -> native
 //     temperature/tint, colorFilter -> ColorFilterEffect (sRGB->linear);
-//   - the --grade-lut opt-in still bakes the legacy CubeLutEffect.
+//   - no option routes SMH through a CubeLutEffect (the engine's LUT runs
+//     after the tonemap; the native bands grade before it).
 // All fixtures are synthetic — no licensed content.
 
 import { test } from 'node:test';
@@ -309,13 +310,17 @@ test('LiftGammaGain is no longer in the dropped-settings summary (it now maps)',
     });
 });
 
-test('--grade-lut opt-in bakes the legacy CubeLutEffect instead of native bands', () => {
+// The engine applies CubeLutEffect after its filmic tonemap, on display-referred
+// [0,1] colour. A ShadowsMidtonesHighlights gain baked there (x1.704 midtones for
+// this wheel) lifts the whole tonemap shoulder, display 0.56 and up, to white;
+// the native bands grade before the tonemap. SMH has no LUT route, whatever the
+// command line says.
+test('ShadowsMidtonesHighlights never bakes a CubeLutEffect, even with the retired --grade-lut flag', () => {
     withTmp((tmp) => {
         const { scene } = runConvert(tmp, [smhDoc([0.5, 0.6, 1.0, 0], [1, 1, 1, 0.176], [1, 1, 1, 0])], ['--grade-lut']);
-        assert.match(scene, /CubeLutEffect\.enabled = true/);
-        assert.match(scene, /CubeLutEffect\.lutAsset = \[path="GradeTest_smh_lut\.cube"/);
-        // With the LUT fallback, SMH does NOT also emit native bands.
-        assert.doesNotMatch(scene, /ColorGradeEffect\.(shadows|midtones|highlights)/);
+        assert.doesNotMatch(scene, /CubeLutEffect\./);
+        assert.equal(fs.existsSync(path.join(tmp, 'proj', 'assets', 'GradeTest_smh_lut.cube')), false);
+        assert.equal(grade(scene, 'midtonesLightness'), 0.0877769);
     });
 });
 

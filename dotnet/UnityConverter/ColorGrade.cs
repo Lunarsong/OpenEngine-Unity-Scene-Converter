@@ -1,7 +1,7 @@
 namespace GameEngine.UnityConverter;
 
-/// Unity colour-grade wheels -> native ColorGradeEffect bands (+ the legacy
-/// --grade-lut .cube bake) — port of the convert.js grade block.
+/// Unity colour-grade wheels -> native ColorGradeEffect bands — port of the
+/// convert.js grade block.
 internal sealed class GradeBand
 {
     public double[] Color = [0, 0, 0];
@@ -29,12 +29,6 @@ internal static class ColorGrade
         double w = a.Length > 3 ? a[3] : 0;
         return Math.Abs(a[0] - 1) < 1e-4 && Math.Abs(a[1] - 1) < 1e-4
             && Math.Abs(a[2] - 1) < 1e-4 && Math.Abs(w) < 1e-4;
-    }
-
-    public static double Smoothstep(double e0, double e1, double x)
-    {
-        double t = Math.Min(1, Math.Max(0, (x - e0) / (e1 - e0)));
-        return t * t * (3 - 2 * t);
     }
 
     public static GradeBand BandFromMultiplier(double[] m)
@@ -169,46 +163,6 @@ internal static class ColorGrade
         Emit("midtones", bands.Midtones);
         Emit("highlights", bands.Highlights);
         return lines;
-    }
-
-    // Legacy --grade-lut: URP ShadowsMidtonesHighlights -> Resolve-style .cube.
-    public static void BakeSmhCubeLut(JsonObj smh, string file)
-    {
-        double[] Prep(object? v)
-        {
-            double[] a = v as double[] ?? [1, 1, 1, 0];
-            double w0 = a.Length > 3 ? a[3] : 0;
-            double w = w0 * (w0 < 0 ? 1 : 4);
-            return [.. new[] { 0, 1, 2 }.Select(i => Math.Max(Skybox.SrgbToLinear(a[i]) + w, 0))];
-        }
-        double[] s = Prep(smh["shadows"]), m = Prep(smh["midtones"]), h = Prep(smh["highlights"]);
-        double shStart = smh["shadowsStart"] is double v1 ? v1 : 0;
-        double shEnd = smh["shadowsEnd"] is double v2 ? v2 : 0.3;
-        double hiStart = smh["highlightsStart"] is double v3 ? v3 : 0.55;
-        double hiEnd = smh["highlightsEnd"] is double v4 ? v4 : 1;
-        const int kLutSize = 33;
-        var lines = new List<string>
-        {
-            "TITLE \"URP ShadowsMidtonesHighlights bake (unity-scene-convert)\"",
-            $"LUT_3D_SIZE {kLutSize}",
-        };
-        for (int b = 0; b < kLutSize; b++)
-        {
-            for (int g = 0; g < kLutSize; g++)
-            {
-                for (int r = 0; r < kLutSize; r++)
-                {
-                    double[] c = [r / (double)(kLutSize - 1), g / (double)(kLutSize - 1), b / (double)(kLutSize - 1)];
-                    double luma = 0.2126729 * c[0] + 0.7151522 * c[1] + 0.0721750 * c[2];
-                    double sh = 1 - Smoothstep(shStart, shEnd, luma);
-                    double hi = Smoothstep(hiStart, hiEnd, luma);
-                    double mid = 1 - sh - hi;
-                    double[] o = [.. c.Select((v, i) => Math.Max(0, v * (s[i] * sh + m[i] * mid + h[i] * hi)))];
-                    lines.Add($"{ToFixed6(o[0])} {ToFixed6(o[1])} {ToFixed6(o[2])}");
-                }
-            }
-        }
-        Js.WriteFileUtf8(file, string.Join("\n", lines) + "\n");
     }
 
     // [r,g,b] in 0..1 at (x, y) where y is a PNG ROW (file order, top row

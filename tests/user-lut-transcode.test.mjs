@@ -4,8 +4,8 @@
 // input encoding (URP samples the user LUT over sRGB-encoded display color —
 // core Color.hlsl ApplyColorGrading). Covers the PNG decoder (filters,
 // bit depths), the strip green-axis flip (GPU v=0 = PNG bottom row), the
-// emit path, honest drops for unsupported inputs, and the --grade-lut
-// conflict (single CubeLutEffect slot). All fixtures are synthetic.
+// emit path, honest drops for unsupported inputs, and ColorLookup beside
+// ShadowsMidtonesHighlights. All fixtures are synthetic.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -395,7 +395,7 @@ test('non-PNG LUT textures are an honest drop naming the format', () => {
     }
 });
 
-test('--grade-lut SMH bake yields the CubeLutEffect slot to ColorLookup; SMH carries as native bands', () => {
+test('ColorLookup beside ShadowsMidtonesHighlights: the CubeLutEffect is the user LUT; SMH carries as native bands', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'userlut-'));
     try {
         const smh = [
@@ -413,17 +413,16 @@ test('--grade-lut SMH bake yields the CubeLutEffect slot to ColorLookup; SMH car
             '    m_OverrideState: 1',
             '    m_Value: {x: 0.9, y: 1, z: 1.1, w: 0}',
         ].join('\n');
-        const { res, scene, projDir } = runConvert(tmp, {
+        const { scene, projDir } = runConvert(tmp, {
             profileExtra: [colorLookupDoc(1, kLutTexGuid), smh],
             lutAsset: neutralStrip(16),
-        }, ['--grade-lut', '--verbose']);
-        // The single CubeLutEffect is the user LUT (Rec709SRGB), not the SMH bake (Linear).
+        });
+        // The single CubeLutEffect is the user LUT (Rec709SRGB).
         assert.match(scene, /CubeLutEffect\.inputEncoding = 1\b/);
         assert.doesNotMatch(scene, /CubeLutEffect\.inputEncoding = 0\b/);
         assert.equal(fs.existsSync(path.join(projDir, 'assets', 'LutTest_smh_lut.cube')), false);
         // SMH still carries — as native three-way bands.
         assert.match(scene, /ColorGradeEffect\./);
-        assert.match(res.stderr, /--grade-lut bake superseded by ColorLookup/);
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
     }

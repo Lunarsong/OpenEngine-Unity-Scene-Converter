@@ -722,10 +722,6 @@ export function buildCorpus(root) {
                 { name: 'convert', args: ['--pkg', pkg, '--scene', 'GradeTest.unity', '--project', '<PROJ>', '--png'] },
             ]);
         }
-        // --grade-lut legacy path (writes the .cube).
-        F('grade-lut', { pkgDir: path.join(dir, 'smh', 'pkg') }, [
-            { name: 'lut', args: ['--pkg', path.join(dir, 'smh', 'pkg'), '--scene', 'GradeTest.unity', '--project', '<PROJ>', '--png', '--grade-lut'] },
-        ]);
     }
 
     // ---- 5. drop (volume-drop-reporting.test.mjs corpus) ----
@@ -777,7 +773,7 @@ export function buildCorpus(root) {
             tga: { docs: [lookupDoc(1)], lut: Buffer.from('TGA-BYTES-NOT-DECODED'), lutPath: 'Assets/LUTs/TealOrange.tga' },
             conflict: {
                 docs: [lookupDoc(0.8), smhDoc([1.2, 1, 0.9, 0], [1, 1, 1, 0], [0.9, 1, 1.1, 0])],
-                lut: lutStrip(16), lutPath: 'Assets/LUTs/TealOrange.png', extraArgs: ['--grade-lut'],
+                lut: lutStrip(16), lutPath: 'Assets/LUTs/TealOrange.png',
             },
             // Hostile decoder inputs — both twins must terminate (the runner's
             // spawn timeout turns a wedge into a FAIL) with identical drop notes.

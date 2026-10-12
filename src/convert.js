@@ -22,12 +22,8 @@
 //   unity-scene-convert --pkg <extracted-pkg-dir> --scene <scene path suffix|guid>
 //                       --project <target-project-dir> [--assetdb <file>]
 //                       [--unity-project <unity-project-dir>]
-//                       [--out <output.scene>] [--grade-lut] [--verbose]
+//                       [--out <output.scene>] [--verbose]
 // (or: node src/convert.js <same flags>)
-//
-// --grade-lut: bake Unity ShadowsMidtonesHighlights to a .cube LUT (legacy
-//   tonemap-coupled path) instead of the default native ColorGradeEffect
-//   three-way bands. Kept for one release of A/B comparison; native is preferred.
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -48,7 +44,6 @@ function parseArgs(argv) {
         if (k === '--verbose') { a.verbose = true; continue; }
         if (k === '--no-copy-textures') { a['no-copy-textures'] = true; continue; }
         if (k === '--png') { a.png = true; continue; }
-        if (k === '--grade-lut') { a['grade-lut'] = true; continue; }
         if (k === '--json') { a.json = true; continue; }
         if (!k.startsWith('--')) fail(`Unknown arg: ${k}`);
         if (k === '--scene') { a.scenes.push(argv[++i]); continue; }
@@ -477,55 +472,11 @@ function loadUnityProjectPipeline(projDir, verbose) {
     return { rpFacts, rpVolumeOverrides, ssao, renderingMode };
 }
 
-// URP ShadowsMidtonesHighlights -> a Resolve-style .cube 3D LUT.
-//
-// Placement is structurally faithful for the demo project's configuration:
-// its RP asset uses LDR grading mode (m_ColorGradingMode: 0), where URP
-// applies the grading LUT AFTER tonemapping over display-referred linear
-// [0,1] (UberPost.shader: "LDR Grading: Apply tonemapping ... Apply internal
-// linear LUT") — the same slot as the engine's post_fx_ldr_stack
-// CubeLutEffect with Linear input encoding, indexed by display-linear RGB in
-// both engines. The only divergence is the tone curve feeding the LUT
-// (their Neutral vs our ACES — near-identical at the night operating point,
-// round-2 A/B).
-//
-// Wheel prep is URP-exact (core ColorUtils.PrepareShadowsMidtonesHighlights):
-// sRGB->linear on the wheel color, w-offset scaled x4 when positive, added,
-// clamped at 0. Range weights are the LutBuilder smoothstep triple over
-// Rec.709 linear luminance.
+// True when a URP wheel value (x, y, z, w) is neutral: unit colour, zero offset.
 function isIdentityWheel(v) {
     if (!Array.isArray(v)) return true;
     return Math.abs(v[0] - 1) < 1e-4 && Math.abs(v[1] - 1) < 1e-4
         && Math.abs(v[2] - 1) < 1e-4 && Math.abs(v[3] || 0) < 1e-4;
-}
-function smoothstep(e0, e1, x) {
-    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
-    return t * t * (3 - 2 * t);
-}
-function bakeSmhCubeLut(smh, file) {
-    const prep = v => {
-        const a = Array.isArray(v) ? v : [1, 1, 1, 0];
-        const w = (a[3] || 0) * ((a[3] || 0) < 0 ? 1 : 4);
-        return [0, 1, 2].map(i => Math.max(srgbToLinear(a[i]) + w, 0));
-    };
-    const S = prep(smh.shadows), M = prep(smh.midtones), H = prep(smh.highlights);
-    const shStart = smh.shadowsStart ?? 0, shEnd = smh.shadowsEnd ?? 0.3;
-    const hiStart = smh.highlightsStart ?? 0.55, hiEnd = smh.highlightsEnd ?? 1;
-    const kLutSize = 33; // Resolve-standard; URP's internal LUT is 32^3
-    const lines = ['TITLE "URP ShadowsMidtonesHighlights bake (unity-scene-convert)"',
-        `LUT_3D_SIZE ${kLutSize}`];
-    for (let b = 0; b < kLutSize; b++)
-        for (let g = 0; g < kLutSize; g++)
-            for (let r = 0; r < kLutSize; r++) { // red fastest per .cube spec
-                const c = [r / (kLutSize - 1), g / (kLutSize - 1), b / (kLutSize - 1)];
-                const luma = 0.2126729 * c[0] + 0.7151522 * c[1] + 0.0721750 * c[2];
-                const sh = 1 - smoothstep(shStart, shEnd, luma);
-                const hi = smoothstep(hiStart, hiEnd, luma);
-                const mid = 1 - sh - hi;
-                const o = c.map((v, i) => Math.max(0, v * (S[i] * sh + M[i] * mid + H[i] * hi)));
-                lines.push(`${o[0].toFixed(6)} ${o[1].toFixed(6)} ${o[2].toFixed(6)}`);
-            }
-    fs.writeFileSync(file, lines.join('\n') + '\n');
 }
 
 // Minimal PNG decoder for ColorLookup LUT strips. Scope: 8/16-bit truecolor
@@ -2143,9 +2094,9 @@ function emitScene(ctx, st, sceneName) {
         // to the global knobs. All emit into ONE ColorGradeEffect block.
         const cgLines = [];
 
-        // SMH / LGG -> native bands (preferred). The legacy tonemap-coupled .cube
-        // LUT bake is kept as an opt-in fallback (--grade-lut) for one release of
-        // A/B before deletion, per the color-grading design (D4/D6).
+        // SMH / LGG -> native bands, graded before the tonemap. Never a .cube
+        // bake: CubeLutEffect runs after the filmic tonemap, where an SMH gain
+        // lifts the whole shoulder to white.
         const smh = (vol.ShadowsMidtonesHighlights && vol.ShadowsMidtonesHighlights.active)
             ? vol.ShadowsMidtonesHighlights : null;
         const smhLive = smh && [smh.shadows, smh.midtones, smh.highlights].some(w => Array.isArray(w) && !isIdentityWheel(w));
@@ -2163,7 +2114,6 @@ function emitScene(ctx, st, sceneName) {
         // LUT texture; contribution DEFAULTS to 0) makes texture-only or
         // zero-contribution authoring inert in Unity too — inert configs skip
         // silently; real translation failures become drop notes.
-        let lookupEmitted = false;
         {
             const lookup = (vol.ColorLookup && vol.ColorLookup.active) ? vol.ColorLookup : null;
             const rawContrib = lookup && typeof lookup.contribution === 'number' ? lookup.contribution : 0;
@@ -2195,7 +2145,6 @@ function emitScene(ctx, st, sceneName) {
                         out.push(`CubeLutEffect.inputEncoding = 1`); // Rec709SRGB
                         out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
                         warn(`volume ColorLookup ${path.basename(entry.assetPath)} (${img.height}^3 strip) -> assets/${lutName}, contribution ${fmtF(contrib)}`, ctx.verbose);
-                        lookupEmitted = true;
                     } catch (err) {
                         noteDropped('volume grade', `ColorLookup (${path.basename(entry.assetPath)}: ${err.message})`, ctx.verbose);
                     }
@@ -2203,45 +2152,24 @@ function emitScene(ctx, st, sceneName) {
             }
         }
 
-        if (ctx.gradeLutFallback && smhLive && ctx.projectDir && !lookupEmitted) {
-            // Opt-in legacy path: bake SMH to a Resolve-style .cube (see
-            // bakeSmhCubeLut). ASSET-ROOT-relative name: SceneIO resolves relative
-            // lutAsset paths against <project>/assets, so "assets/x.cube" would
-            // double to <project>/assets/assets/x.cube and fail GUID resolution.
-            const lutName = `${sceneName}_smh_lut.cube`;
-            const lutAbs = path.join(ctx.projectDir, 'assets', lutName);
-            bakeSmhCubeLut(smh, lutAbs);
-            recordOutput(ctx, lutAbs, 'lut');
-            out.push(`CubeLutEffect.enabled = true`);
-            out.push(`CubeLutEffect.stackOrder = 0`);
-            out.push(`CubeLutEffect.intensity = 1`);
-            out.push(`CubeLutEffect.inputEncoding = 0`);
-            out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
-            warn(`volume ShadowsMidtonesHighlights baked to assets/${lutName} (--grade-lut legacy path)`, ctx.verbose);
-            if (lggLive)
-                noteDropped('volume grade', 'LiftGammaGain (native-band mapping disabled by --grade-lut; the LUT fallback bakes SMH only)', ctx.verbose);
-        } else {
-            // Native three-way bands. Unlike the LUT bake these need no --project
-            // dir (no file is written), so SMH/LGG now carry for pkg-only runs too.
-            if (ctx.gradeLutFallback && smhLive && lookupEmitted)
-                warn('volume ShadowsMidtonesHighlights: --grade-lut bake superseded by ColorLookup (single CubeLutEffect slot); SMH carries as native ColorGradeEffect bands', ctx.verbose);
-            let bands = null;
-            if (smhLive) bands = smhToBands(smh);
-            if (lggLive) bands = bands ? addBands(bands, lggToBands(lgg)) : lggToBands(lgg);
-            if (bands && !bandsAreNeutral(bands)) {
-                cgLines.push(...emitColorGradeBandLines(bands));
-                if (smhLive) {
-                    // Carry URP's band partition too (see smhLimitsToNative for the
-                    // domain mapping). LGG-only volumes keep the native defaults —
-                    // URP LGG is unbanded, so there is no partition to transfer.
-                    const lim = smhLimitsToNative(smh);
-                    cgLines.push(`ColorGradeEffect.shadowsStart = ${fmtF(lim.shadowsStart)}`);
-                    cgLines.push(`ColorGradeEffect.shadowsEnd = ${fmtF(lim.shadowsEnd)}`);
-                    cgLines.push(`ColorGradeEffect.highlightsStart = ${fmtF(lim.highlightsStart)}`);
-                    cgLines.push(`ColorGradeEffect.highlightsEnd = ${fmtF(lim.highlightsEnd)}`);
-                }
-                warn(`volume grade: ${[smhLive && 'ShadowsMidtonesHighlights', lggLive && 'LiftGammaGain'].filter(Boolean).join(' + ')} -> native ColorGradeEffect three-way bands`, ctx.verbose);
+        // Native three-way bands need no --project dir (no file is written),
+        // so SMH/LGG carry for pkg-only runs too.
+        let bands = null;
+        if (smhLive) bands = smhToBands(smh);
+        if (lggLive) bands = bands ? addBands(bands, lggToBands(lgg)) : lggToBands(lgg);
+        if (bands && !bandsAreNeutral(bands)) {
+            cgLines.push(...emitColorGradeBandLines(bands));
+            if (smhLive) {
+                // Carry URP's band partition too (see smhLimitsToNative for the
+                // domain mapping). LGG-only volumes keep the native defaults —
+                // URP LGG is unbanded, so there is no partition to transfer.
+                const lim = smhLimitsToNative(smh);
+                cgLines.push(`ColorGradeEffect.shadowsStart = ${fmtF(lim.shadowsStart)}`);
+                cgLines.push(`ColorGradeEffect.shadowsEnd = ${fmtF(lim.shadowsEnd)}`);
+                cgLines.push(`ColorGradeEffect.highlightsStart = ${fmtF(lim.highlightsStart)}`);
+                cgLines.push(`ColorGradeEffect.highlightsEnd = ${fmtF(lim.highlightsEnd)}`);
             }
+            warn(`volume grade: ${[smhLive && 'ShadowsMidtonesHighlights', lggLive && 'LiftGammaGain'].filter(Boolean).join(' + ')} -> native ColorGradeEffect three-way bands`, ctx.verbose);
         }
 
         // ColorAdjustments contrast/saturation are percentage offsets (-100..100
@@ -2368,7 +2296,7 @@ function emitScene(ctx, st, sceneName) {
             'ColorAdjustments',            // postExposure/contrast/saturation/hueShift/colorFilter
             'WhiteBalance',                // -> ColorGradeEffect temperature/tint (LMS parity)
             'Bloom', 'Vignette', 'ChromaticAberration',
-            'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands (or --grade-lut .cube fallback)
+            'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands
             'LiftGammaGain',               // -> native ColorGradeEffect bands via ASC CDL
             'Tonemapping',                 // deliberately substituted with ACES (documented divergence)
             'ColorLookup',                 // -> CubeLutEffect (strip -> .cube transcode; failures noteDropped above)
@@ -3691,7 +3619,6 @@ function main(argv = process.argv) {
             fallbackUnmappable: 0, fallbackList: [], byFamily: new Map() },
         projectPipeline: null,
         localShadows,
-        gradeLutFallback: !!args['grade-lut'],  // opt-in legacy SMH .cube bake (A/B vs native bands)
         verbose: !!args.verbose,
         outputs: [],           // [{path, kind}] — every file this run produced
         outputSet: new Set(),
