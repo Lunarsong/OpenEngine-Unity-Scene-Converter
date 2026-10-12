@@ -62,7 +62,7 @@ unity-scene-convert [<pkg-dir> [<project-dir>]] \
                     [--assetdb <file>] [--unity-project <unity-project-dir>] \
                     [--out <output.scene>] [--local-shadows off|faithful] \
                     [--no-copy-textures] [--png] [--texc <TextureCompiler.exe>] \
-                    [--grade-lut] [--json] [--verbose]
+                    [--json] [--verbose]
 unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
 ```
 
@@ -100,13 +100,6 @@ unity-scene-convert --list-scenes <extracted-pkg-dir | pack.unitypackage>
   in what the pack can't: the RP asset's quality-level volume profile
   (layered UNDER the scene's global volume, URP-style), the renderer's SSAO
   feature (→ `AmbientOcclusionEffect`), and shadow/HDR/MSAA facts (logged).
-- `--grade-lut` — legacy colour-grade path: bake `ShadowsMidtonesHighlights`
-  to a Resolve-style `.cube` LUT in `<project>/assets/` plus `CubeLutEffect`
-  lines (the authored `lutAsset` path is asset-root-relative,
-  `<Scene>_smh_lut.cube`, which is what the engine's SceneIO resolves it
-  against on load). Without the flag, SMH/LGG wheels map to the engine's
-  native `ColorGradeEffect` three-way bands — see
-  [Colour grading](#colour-grading). Kept for one release of A/B comparison.
 - `--local-shadows` — additional-light (point/spot) shadow policy, see
   [Limitations](#limitations-all-counted-in-stats).
 - `--no-copy-textures` / `--png` / `--texc` — texture handling, see
@@ -526,7 +519,7 @@ The engine does not carry a copy of the sources.
 
 The engine's editor runs the C# converter in-process from its `unity-import`
 engine package (Tools > Import Unity Package...). The engine repository
-vendors one built assembly, `EnginePackages/unity-import/Tools/UnityConverter.dll`,
+vendors one built assembly, `Packages/unity-import/Tools/UnityConverter.dll`,
 and records the converter commit it was built from, the build command and the
 file's SHA-256 beside it in `UnityConverter.dll.source`.
 
@@ -552,7 +545,7 @@ only when the converter changes. To update the engine's copy:
    assembly's informational version carries the commit it was built from. The bundled shaders in `shaders/` are embedded in the assembly
    as resources.
 3. Copy `dist/UnityConverter.dll` over the engine's
-   `EnginePackages/unity-import/Tools/UnityConverter.dll` and update the commit,
+   `Packages/unity-import/Tools/UnityConverter.dll` and update the commit,
    SDK and SHA-256 in `UnityConverter.dll.source`, in one engine pull request.
 
 ## License

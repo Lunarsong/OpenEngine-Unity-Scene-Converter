@@ -592,7 +592,6 @@ internal static class Emitter
             // user LUT sample == CubeLutEffect Rec709SRGB input encoding,
             // intensity = contribution; inert configs skip silently, real
             // translation failures become drop notes).
-            bool lookupEmitted = false;
             {
                 var lookup = vol["ColorLookup"] is JsonObj lo && lo["active"] is true ? lo : null;
                 double rawContrib = lookup?["contribution"] is double lc ? lc : 0;
@@ -639,7 +638,6 @@ internal static class Emitter
                             output.Add("CubeLutEffect.inputEncoding = 1"); // Rec709SRGB
                             output.Add($"CubeLutEffect.lutAsset = [path=\"{lutName}\" guid=\"\"]");
                             G.Warn($"volume ColorLookup {Js.PathBasename(entry.AssetPath)} ({img.Height}^3 strip) -> assets/{lutName}, contribution {FmtF(contrib)}", ctx.Verbose);
-                            lookupEmitted = true;
                         }
                         catch (Exception err)
                         {
@@ -649,42 +647,23 @@ internal static class Emitter
                 }
             }
 
-            if (ctx.GradeLutFallback && smhLive && ctx.ProjectDir != null && !lookupEmitted)
+            // Native three-way bands, graded before the tonemap (see convert.js).
+            GradeBands? bands = null;
+            if (smhLive) bands = ColorGrade.SmhToBands(smh!);
+            if (lggLive) bands = bands != null ? ColorGrade.AddBands(bands, ColorGrade.LggToBands(lgg!)) : ColorGrade.LggToBands(lgg!);
+            if (bands != null && !ColorGrade.BandsAreNeutral(bands))
             {
-                string lutName = $"{sceneName}_smh_lut.cube";
-                string lutAbs = Js.PathJoin(ctx.ProjectDir, "assets", lutName);
-                ColorGrade.BakeSmhCubeLut(smh!, lutAbs);
-                ConvertCli.RecordOutput(ctx, lutAbs, "lut");
-                output.Add("CubeLutEffect.enabled = true");
-                output.Add("CubeLutEffect.stackOrder = 0");
-                output.Add("CubeLutEffect.intensity = 1");
-                output.Add("CubeLutEffect.inputEncoding = 0");
-                output.Add($"CubeLutEffect.lutAsset = [path=\"{lutName}\" guid=\"\"]");
-                G.Warn($"volume ShadowsMidtonesHighlights baked to assets/{lutName} (--grade-lut legacy path)", ctx.Verbose);
-                if (lggLive)
-                    G.NoteDropped("volume grade", "LiftGammaGain (native-band mapping disabled by --grade-lut; the LUT fallback bakes SMH only)", ctx.Verbose);
-            }
-            else
-            {
-                if (ctx.GradeLutFallback && smhLive && lookupEmitted)
-                    G.Warn("volume ShadowsMidtonesHighlights: --grade-lut bake superseded by ColorLookup (single CubeLutEffect slot); SMH carries as native ColorGradeEffect bands", ctx.Verbose);
-                GradeBands? bands = null;
-                if (smhLive) bands = ColorGrade.SmhToBands(smh!);
-                if (lggLive) bands = bands != null ? ColorGrade.AddBands(bands, ColorGrade.LggToBands(lgg!)) : ColorGrade.LggToBands(lgg!);
-                if (bands != null && !ColorGrade.BandsAreNeutral(bands))
+                cgLines.AddRange(ColorGrade.EmitColorGradeBandLines(bands));
+                if (smhLive)
                 {
-                    cgLines.AddRange(ColorGrade.EmitColorGradeBandLines(bands));
-                    if (smhLive)
-                    {
-                        ColorGrade.BandLimits lim = ColorGrade.SmhLimitsToNative(smh!);
-                        cgLines.Add($"ColorGradeEffect.shadowsStart = {FmtF(lim.ShadowsStart)}");
-                        cgLines.Add($"ColorGradeEffect.shadowsEnd = {FmtF(lim.ShadowsEnd)}");
-                        cgLines.Add($"ColorGradeEffect.highlightsStart = {FmtF(lim.HighlightsStart)}");
-                        cgLines.Add($"ColorGradeEffect.highlightsEnd = {FmtF(lim.HighlightsEnd)}");
-                    }
-                    string[] live = [.. new[] { smhLive ? "ShadowsMidtonesHighlights" : null, lggLive ? "LiftGammaGain" : null }.Where(x => x != null)!];
-                    G.Warn($"volume grade: {string.Join(" + ", live)} -> native ColorGradeEffect three-way bands", ctx.Verbose);
+                    ColorGrade.BandLimits lim = ColorGrade.SmhLimitsToNative(smh!);
+                    cgLines.Add($"ColorGradeEffect.shadowsStart = {FmtF(lim.ShadowsStart)}");
+                    cgLines.Add($"ColorGradeEffect.shadowsEnd = {FmtF(lim.ShadowsEnd)}");
+                    cgLines.Add($"ColorGradeEffect.highlightsStart = {FmtF(lim.HighlightsStart)}");
+                    cgLines.Add($"ColorGradeEffect.highlightsEnd = {FmtF(lim.HighlightsEnd)}");
                 }
+                string[] live = [.. new[] { smhLive ? "ShadowsMidtonesHighlights" : null, lggLive ? "LiftGammaGain" : null }.Where(x => x != null)!];
+                G.Warn($"volume grade: {string.Join(" + ", live)} -> native ColorGradeEffect three-way bands", ctx.Verbose);
             }
 
             if (colAdj != null)

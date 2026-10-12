@@ -14,7 +14,8 @@
 //     saturation carried 1:1; gradeInLog = true;
 //   - no old keys emitted; hueShift carries in degrees, WhiteBalance -> native
 //     temperature/tint, colorFilter -> ColorFilterEffect (sRGB->linear);
-//   - the --grade-lut opt-in still bakes the legacy CubeLutEffect.
+//   - SMH never yields a CubeLutEffect or a baked .cube (the engine's LUT runs
+//     after the tonemap; the native bands grade before it).
 // All fixtures are synthetic — no licensed content.
 
 import { test } from 'node:test';
@@ -158,8 +159,10 @@ test('ShadowsMidtonesHighlights -> native three-way bands (URP prep numbers), no
         // Highlights wheel was neutral -> no highlights offset lines emitted
         // (highlightsStart/End band limits still carry the URP partition).
         assert.doesNotMatch(scene, /ColorGradeEffect\.highlights(Color[RGB]|Lightness)/);
-        // NOT the legacy LUT path, and NONE of the removed single-range keys.
+        // No LUT (the engine's CubeLutEffect runs after the tonemap), and NONE
+        // of the removed single-range keys.
         assert.doesNotMatch(scene, /CubeLutEffect\./);
+        assert.equal(fs.existsSync(path.join(tmp, 'proj', 'assets', 'GradeTest_smh_lut.cube')), false);
         assert.doesNotMatch(scene, /ColorGradeEffect\.(brightness|gamma|hue)\b/);
     });
 });
@@ -306,16 +309,6 @@ test('LiftGammaGain is no longer in the dropped-settings summary (it now maps)',
     withTmp((tmp) => {
         const { res } = runConvert(tmp, [lggDoc([1, 0.9, 0.85, 0.02], [1, 1, 1, 0], [1, 1, 1, 0])]);
         assert.doesNotMatch(res.stdout + res.stderr, /LiftGammaGain.*(no engine mapping|no engine equivalent|dropped)/i);
-    });
-});
-
-test('--grade-lut opt-in bakes the legacy CubeLutEffect instead of native bands', () => {
-    withTmp((tmp) => {
-        const { scene } = runConvert(tmp, [smhDoc([0.5, 0.6, 1.0, 0], [1, 1, 1, 0.176], [1, 1, 1, 0])], ['--grade-lut']);
-        assert.match(scene, /CubeLutEffect\.enabled = true/);
-        assert.match(scene, /CubeLutEffect\.lutAsset = \[path="GradeTest_smh_lut\.cube"/);
-        // With the LUT fallback, SMH does NOT also emit native bands.
-        assert.doesNotMatch(scene, /ColorGradeEffect\.(shadows|midtones|highlights)/);
     });
 });
 
