@@ -207,6 +207,38 @@ function noteDropped(kind, detail, verbose) {
     if (verbose) console.error(`DROP: ${kind}: ${detail}`);
 }
 
+// Unity's Tonemapping override -> the engine's look, by the mode's integer (URP and
+// HDRP share 0..2; HDRP adds Custom and External). The engine never carries a
+// source engine's operator: a mode becomes the nearest look.
+//   None (0)      -> Neutral: the nearest look that does not clip (identity below 0.76)
+//   Neutral (1)   -> Neutral
+//   ACES (2)      -> Filmic: the filmic look
+//   Custom (3)    -> Filmic: the nearest filmic look; the toe/shoulder curve is dropped
+//   External (4)  -> Neutral, the LUT dropped: no grade-stage LUT to carry it yet
+// No active override (or no mode override) is Unity's None.
+const kTonemappingModeNone = 0, kTonemappingModeNeutral = 1, kTonemappingModeAces = 2,
+    kTonemappingModeCustom = 3, kTonemappingModeExternal = 4;
+function lookForTonemapping(tonemapping, verbose) {
+    const mode = (tonemapping && tonemapping.active && typeof tonemapping.mode === 'number')
+        ? tonemapping.mode : kTonemappingModeNone;
+    switch (mode) {
+        case kTonemappingModeNone:
+        case kTonemappingModeNeutral:
+            return 'Neutral';
+        case kTonemappingModeAces:
+            return 'Filmic';
+        case kTonemappingModeCustom:
+            noteDropped('volume grade', 'Tonemapping custom curve (toe/shoulder; converted as the Filmic look)', verbose);
+            return 'Filmic';
+        case kTonemappingModeExternal:
+            noteDropped('volume grade', 'Tonemapping external LUT (converted as the Neutral look; the LUT is not carried)', verbose);
+            return 'Neutral';
+        default:
+            noteDropped('volume grade', `Tonemapping mode ${mode} (unknown; converted as the Neutral look)`, verbose);
+            return 'Neutral';
+    }
+}
+
 let nodeCounter = 0;
 const lodSource = require('./lod-source');
 function materialGuidAt(node, slot) {
@@ -1980,7 +2012,8 @@ function emitScene(ctx, st, sceneName) {
     // this entity renders shadowed surfaces pitch black. Emit the default-
     // scene environment pair: a SkyEnvironment linked to the converted sun
     // (TimeOfDayDrivesSunLight=false so the sky follows the AUTHORED sun
-    // instead of rotating it to noon) + a global ACES tonemap volume.
+    // instead of rotating it to noon) + a global post-process volume carrying
+    // the look the source's Tonemapping override maps to.
     if (emitted.sunEntityId) {
         out.push(`[entity id="e_${++idCounter}"]`);
         out.push(`Name.value = "Sky Environment"`);
@@ -2005,12 +2038,7 @@ function emitScene(ctx, st, sceneName) {
         out.push(`Transform.scale = (1, 1, 1)`);
         out.push(`PostProcessVolume.enabled = true`);
         out.push(`PostProcessVolume.isGlobal = true`);
-        // ACES stays — a deliberate divergence. The real demo project
-        // tonemaps NEUTRAL via the RP asset's quality-level volume profile
-        // (round 3; the pack-only data made it look like mode=None because
-        // the scene profile's Tonemapping override is off). Round 2 A/B'd
-        // Neutral vs ACES at the night operating point: near-identical.
-        out.push(`PostProcessVolume.tonemap = 0`);
+        out.push(`PostProcessVolume.look = ${lookForTonemapping((ctx.volumeOverrides || {}).Tonemapping, ctx.verbose)}`);
         // Night operating-point bias (slice 5b). 5a established that dimming the
         // sky/IBL/moon is pixel-inert under auto-exposure (the meter re-normalizes
         // it away) and that SkyExposureTrim +2 is the clamp ceiling but still leaves
@@ -2298,7 +2326,7 @@ function emitScene(ctx, st, sceneName) {
             'Bloom', 'Vignette', 'ChromaticAberration',
             'ShadowsMidtonesHighlights',   // -> native ColorGradeEffect bands
             'LiftGammaGain',               // -> native ColorGradeEffect bands via ASC CDL
-            'Tonemapping',                 // deliberately substituted with ACES (documented divergence)
+            'Tonemapping',                 // -> PostProcessVolume.look (lookForTonemapping)
             'ColorLookup',                 // -> CubeLutEffect (strip -> .cube transcode; failures noteDropped above)
         ]);
         const componentHasEffect = (comp) => Object.entries(comp).some(([k, v]) => k !== 'active'
@@ -3880,4 +3908,6 @@ module.exports = {
     srgbToLinear, linearizeAmbientColor, emitAmbientLightLines,
     // ColorLookup strip -> .cube (exercised by tests/user-lut-transcode.test.mjs).
     decodePng, bakeLookupCubeLut,
+    // Tonemapping -> look (exercised by tests/look-mapping.test.mjs).
+    lookForTonemapping,
 };
