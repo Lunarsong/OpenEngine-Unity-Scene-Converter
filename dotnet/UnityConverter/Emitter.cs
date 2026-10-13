@@ -670,7 +670,6 @@ internal static class Emitter
                             ColorGrade.BakeLookupCubeLut(img, lutAbs);
                             ConvertCli.RecordOutput(ctx, lutAbs, "lut");
                             output.Add("CubeLutEffect.enabled = true");
-                            output.Add("CubeLutEffect.stackOrder = 0");
                             output.Add($"CubeLutEffect.intensity = {FmtF(contrib)}");
                             output.Add("CubeLutEffect.inputEncoding = 1"); // Rec709SRGB
                             output.Add($"CubeLutEffect.lutAsset = [path=\"{lutName}\" guid=\"\"]");

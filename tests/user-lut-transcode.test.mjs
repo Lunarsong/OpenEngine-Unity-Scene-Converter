@@ -339,6 +339,8 @@ test('ColorLookup converts to CubeLutEffect with a transcoded .cube', () => {
         });
         assert.match(scene, /CubeLutEffect\.enabled = true/);
         assert.match(scene, /CubeLutEffect\.intensity = 0\.75\b/);
+        // The engine runs the LUT at one place, inside its Tonemap pass: it has no stack order.
+        assert.doesNotMatch(scene, /CubeLutEffect\.stackOrder/);
         assert.match(scene, /CubeLutEffect\.inputEncoding = 1\b/);
         assert.match(scene, /CubeLutEffect\.lutAsset = \[path="LutTest_lookup_lut\.cube" guid=""\]/);
         const cube = fs.readFileSync(path.join(projDir, 'assets', 'LutTest_lookup_lut.cube'), 'utf8');
