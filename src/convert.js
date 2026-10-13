@@ -2168,7 +2168,6 @@ function emitScene(ctx, st, sceneName) {
                         bakeLookupCubeLut(img, lutAbs);
                         recordOutput(ctx, lutAbs, 'lut');
                         out.push(`CubeLutEffect.enabled = true`);
-                        out.push(`CubeLutEffect.stackOrder = 0`);
                         out.push(`CubeLutEffect.intensity = ${fmtF(contrib)}`);
                         out.push(`CubeLutEffect.inputEncoding = 1`); // Rec709SRGB
                         out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
