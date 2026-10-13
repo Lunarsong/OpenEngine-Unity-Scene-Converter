@@ -52,6 +52,43 @@ internal static class Emitter
     public static string Fmt3(double[] a) => $"({FmtF(a[0])}, {FmtF(a[1])}, {FmtF(a[2])})";
     public static string Fmt4(double[] a) => $"({FmtF(a[0])}, {FmtF(a[1])}, {FmtF(a[2])}, {FmtF(a[3])})";
 
+    // ---------------------------------------------------------- the look ----
+    // Unity's Tonemapping override -> the engine's look, by the mode's integer (URP and
+    // HDRP share 0..2; HDRP adds Custom and External); port of convert.js
+    // lookForTonemapping. The engine never carries a source engine's operator: a mode
+    // becomes the nearest look.
+    //   None (0)      -> Neutral: the nearest look that does not clip (identity below 0.76)
+    //   Neutral (1)   -> Neutral
+    //   ACES (2)      -> Filmic: the filmic look
+    //   Custom (3)    -> Filmic: the nearest filmic look; the toe/shoulder curve is dropped
+    //   External (4)  -> Neutral, the LUT dropped: no grade-stage LUT to carry it yet
+    // No active override (or no mode override) is Unity's None.
+    private const double kTonemappingModeNone = 0, kTonemappingModeNeutral = 1, kTonemappingModeAces = 2,
+        kTonemappingModeCustom = 3, kTonemappingModeExternal = 4;
+
+    public static string LookForTonemapping(JsonObj? tonemapping, bool verbose)
+    {
+        double mode = tonemapping != null && tonemapping["active"] is true && tonemapping["mode"] is double m
+            ? m : kTonemappingModeNone;
+        switch (mode)
+        {
+            case kTonemappingModeNone:
+            case kTonemappingModeNeutral:
+                return "Neutral";
+            case kTonemappingModeAces:
+                return "Filmic";
+            case kTonemappingModeCustom:
+                G.NoteDropped("volume grade", "Tonemapping custom curve (toe/shoulder; converted as the Filmic look)", verbose);
+                return "Filmic";
+            case kTonemappingModeExternal:
+                G.NoteDropped("volume grade", "Tonemapping external LUT (converted as the Neutral look; the LUT is not carried)", verbose);
+                return "Neutral";
+            default:
+                G.NoteDropped("volume grade", $"Tonemapping mode {Js.NumberToString(mode)} (unknown; converted as the Neutral look)", verbose);
+                return "Neutral";
+        }
+    }
+
     // ------------------------------------------- transform convention ------
     public static double[] Conj(double[] q) => [-q[0], -q[1], -q[2], q[3]];
 
@@ -540,9 +577,9 @@ internal static class Emitter
             output.Add("Transform.scale = (1, 1, 1)");
             output.Add("PostProcessVolume.enabled = true");
             output.Add("PostProcessVolume.isGlobal = true");
-            output.Add("PostProcessVolume.tonemap = 0");
 
             JsonObj vol = ctx.VolumeOverrides ?? new JsonObj();
+            output.Add($"PostProcessVolume.look = {LookForTonemapping(vol["Tonemapping"] as JsonObj, ctx.Verbose)}");
             var colAdj = vol["ColorAdjustments"] is JsonObj ca && ca["active"] is true ? ca : null;
             double colAdjPostExposureEv = colAdj?["postExposure"] is double pe ? pe : 0;
             if (ctx.RenderSettings?.IsNight == true)
@@ -753,7 +790,8 @@ internal static class Emitter
             var kTranslatedVolumeComponents = new HashSet<string>
             {
                 "ColorAdjustments", "WhiteBalance", "Bloom", "Vignette", "ChromaticAberration",
-                "ShadowsMidtonesHighlights", "LiftGammaGain", "Tonemapping",
+                "ShadowsMidtonesHighlights", "LiftGammaGain",
+                "Tonemapping", // -> PostProcessVolume.look (LookForTonemapping)
                 "ColorLookup", // -> CubeLutEffect (strip -> .cube transcode; failures noteDropped above)
             };
             bool ComponentHasEffect(JsonObj comp) => comp.Keys.Any(k => k != "active"

@@ -756,6 +756,37 @@ export function buildCorpus(root) {
         ]);
     }
 
+    // ---- 5a. look (Tonemapping mode -> PostProcessVolume.look, drops reported) ----
+    {
+        const dir = path.join(root, 'look');
+        const tonemappingDoc = (mode) => ['  m_Name: Tonemapping', '  active: 1',
+            '  mode:', '    m_OverrideState: 1', `    m_Value: ${mode}`];
+        const variants = { aces: 2, custom: 3, external: 4 };
+        let n = 0;
+        for (const [variant, mode] of Object.entries(variants)) {
+            ++n;
+            const sceneGuid = `00000000000000000000000000lk0${n}01`;
+            const profGuid = `00000000000000000000000000lk0${n}02`;
+            const pkg = path.join(dir, variant, 'pkg');
+            writeExtractedDir(pkg, {
+                [sceneGuid]: {
+                    pathname: 'Assets/Scenes/LookTest.unity',
+                    asset: sceneYaml([
+                        lightYaml(300, 'Sun', 1),
+                        globalVolumeYaml(400, profGuid),
+                    ], kDayRenderSettings),
+                },
+                [profGuid]: {
+                    pathname: 'Assets/Volumes/LookProfile.asset',
+                    asset: profileYaml([tonemappingDoc(mode)]),
+                },
+            });
+            F(`look-${variant}`, { pkgDir: pkg }, [
+                { name: 'human', args: ['--pkg', pkg, '--scene', 'LookTest.unity', '--project', '<PROJ>', '--png'] },
+            ]);
+        }
+    }
+
     // ---- 5b. userlut (ColorLookup strip -> CubeLutEffect .cube transcode) ----
     {
         const dir = path.join(root, 'userlut');

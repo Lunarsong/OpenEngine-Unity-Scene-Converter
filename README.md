@@ -343,6 +343,12 @@ three-way corrector graded in ACEScct-shaped log space
   exactly as URP does.
 - **ChromaticAberration** — Unity's normalized `[0,1]` intensity maps onto
   the engine's absolute pixel range (`[0,12]` px, linear).
+- **Tonemapping** — the mode becomes the volume's look, written by name
+  (`PostProcessVolume.look`): None and Neutral become **Neutral**, ACES becomes
+  **Filmic**; HDRP's Custom curve becomes Filmic with the curve reported as
+  dropped, and HDRP's External LUT becomes Neutral with the LUT reported as
+  dropped. A volume with no Tonemapping override is Unity's None (Neutral).
+  Guarded by `tests/look-mapping.test.mjs`.
 - **ColorLookup** — the user's 2D strip LUT texture is transcoded to a
   Resolve-style `.cube` at convert time (exact texel carry; PNG 8/16-bit
   truecolor, non-interlaced) and emitted as a `CubeLutEffect` with
