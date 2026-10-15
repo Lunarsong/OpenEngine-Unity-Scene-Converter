@@ -671,7 +671,8 @@ internal static class Emitter
                             ConvertCli.RecordOutput(ctx, lutAbs, "lut");
                             output.Add("CubeLutEffect.enabled = true");
                             output.Add($"CubeLutEffect.intensity = {FmtF(contrib)}");
-                            output.Add("CubeLutEffect.inputEncoding = 1"); // Rec709SRGB
+                            // A display LUT, after the look; its title names sRGB, so the engine proposes that encoding for the asset.
+                            output.Add("CubeLutEffect.stage = Finish");
                             output.Add($"CubeLutEffect.lutAsset = [path=\"{lutName}\" guid=\"\"]");
                             G.Warn($"volume ColorLookup {Js.PathBasename(entry.AssetPath)} ({img.Height}^3 strip) -> assets/{lutName}, contribution {FmtF(contrib)}", ctx.Verbose);
                         }

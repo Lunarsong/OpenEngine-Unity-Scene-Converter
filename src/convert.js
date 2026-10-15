@@ -603,7 +603,7 @@ function pngTexel(img, x, y) {
 // first), so green flips against file rows.
 function bakeLookupCubeLut(img, file) {
     const size = img.height;
-    const lines = ['TITLE "URP ColorLookup strip transcode (unity-scene-convert)"',
+    const lines = ['TITLE "URP ColorLookup strip transcode, sRGB display (unity-scene-convert)"',
         `LUT_3D_SIZE ${size}`];
     for (let b = 0; b < size; b++)
         for (let g = 0; g < size; g++)
@@ -2169,7 +2169,8 @@ function emitScene(ctx, st, sceneName) {
                         recordOutput(ctx, lutAbs, 'lut');
                         out.push(`CubeLutEffect.enabled = true`);
                         out.push(`CubeLutEffect.intensity = ${fmtF(contrib)}`);
-                        out.push(`CubeLutEffect.inputEncoding = 1`); // Rec709SRGB
+                        // A display LUT, after the look; its title names sRGB, so the engine proposes that encoding for the asset.
+                        out.push(`CubeLutEffect.stage = Finish`);
                         out.push(`CubeLutEffect.lutAsset = [path="${lutName}" guid=""]`);
                         warn(`volume ColorLookup ${path.basename(entry.assetPath)} (${img.height}^3 strip) -> assets/${lutName}, contribution ${fmtF(contrib)}`, ctx.verbose);
                     } catch (err) {

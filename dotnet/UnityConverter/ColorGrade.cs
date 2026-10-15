@@ -186,7 +186,7 @@ internal static class ColorGrade
         int size = img.Height;
         var lines = new List<string>
         {
-            "TITLE \"URP ColorLookup strip transcode (unity-scene-convert)\"",
+            "TITLE \"URP ColorLookup strip transcode, sRGB display (unity-scene-convert)\"",
             $"LUT_3D_SIZE {size}",
         };
         for (int b = 0; b < size; b++)
