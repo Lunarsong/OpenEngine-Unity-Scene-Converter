@@ -341,10 +341,12 @@ test('ColorLookup converts to CubeLutEffect with a transcoded .cube', () => {
         assert.match(scene, /CubeLutEffect\.intensity = 0\.75\b/);
         // The engine runs the LUT at one place, inside its Tonemap pass: it has no stack order.
         assert.doesNotMatch(scene, /CubeLutEffect\.stackOrder/);
-        assert.match(scene, /CubeLutEffect\.inputEncoding = 1\b/);
+        // A display LUT runs after the look; the encoding belongs to the asset, which the title names.
+        assert.match(scene, /CubeLutEffect\.stage = Finish\b/);
+        assert.doesNotMatch(scene, /CubeLutEffect\.inputEncoding/);
         assert.match(scene, /CubeLutEffect\.lutAsset = \[path="LutTest_lookup_lut\.cube" guid=""\]/);
         const cube = fs.readFileSync(path.join(projDir, 'assets', 'LutTest_lookup_lut.cube'), 'utf8');
-        assert.match(cube, /^TITLE "URP ColorLookup strip transcode \(unity-scene-convert\)"\nLUT_3D_SIZE 16\n/);
+        assert.match(cube, /^TITLE "URP ColorLookup strip transcode, sRGB display \(unity-scene-convert\)"\nLUT_3D_SIZE 16\n/);
         assert.equal(cube.trim().split('\n').length, 2 + 16 * 16 * 16);
         assert.doesNotMatch(res.stdout, /\[volume grade\] ColorLookup/);
     } finally {
@@ -419,9 +421,9 @@ test('ColorLookup beside ShadowsMidtonesHighlights: the CubeLutEffect is the use
             profileExtra: [colorLookupDoc(1, kLutTexGuid), smh],
             lutAsset: neutralStrip(16),
         });
-        // The single CubeLutEffect is the user LUT (Rec709SRGB).
-        assert.match(scene, /CubeLutEffect\.inputEncoding = 1\b/);
-        assert.doesNotMatch(scene, /CubeLutEffect\.inputEncoding = 0\b/);
+        // The single CubeLutEffect is the user LUT, a display LUT after the look.
+        assert.equal(scene.match(/CubeLutEffect\.stage = /g)?.length, 1);
+        assert.match(scene, /CubeLutEffect\.stage = Finish\b/);
         assert.equal(fs.existsSync(path.join(projDir, 'assets', 'LutTest_smh_lut.cube')), false);
         // SMH still carries — as native three-way bands.
         assert.match(scene, /ColorGradeEffect\./);
